@@ -29,7 +29,7 @@ const SITE_DEADLINE_MS = 120_000;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
-const kb = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`);
+const kb = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n === 0 ? '0 kB' : `${Math.max(1, Math.round(n / 1e3))} kB`);
 
 let client = null;
 let launchedAt = 0;
@@ -126,7 +126,12 @@ async function loadOnion(r) {
   r.start = rows[0].start;
   try {
     await withDeadline((async () => {
-      const { res } = await torFetch(r.url);
+      // One retry: on the live network an introduction point or rendezvous
+      // occasionally fails, and a second attempt picks others.
+      const { res } = await torFetch(r.url).catch(async (e) => {
+        log('warn', `${r.name}: ${e?.message || e}; retrying once`);
+        return torFetch(r.url);
+      });
       r.headers = performance.now();
       r.status = res.status;
       const bytes = new Uint8Array(await res.arrayBuffer());

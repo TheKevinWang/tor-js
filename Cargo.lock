@@ -6290,6 +6290,7 @@ dependencies = [
  "serde_json",
  "tor-async-utils 0.45.0",
  "tor-checkable 0.45.0",
+ "tor-circmgr 0.45.0",
  "tor-dirmgr 0.45.0",
  "tor-general-addr 0.45.0",
  "tor-llcrypto 0.45.0",

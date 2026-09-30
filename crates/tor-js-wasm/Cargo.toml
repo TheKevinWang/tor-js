@@ -28,6 +28,9 @@ arti-client = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd
     # WasmRuntime itself (src/bridges.rs, src/snowflake/).
     "bridge-client",
 ]}
+# Used to wait for a first circuit through the bridge after bootstrap
+# (lib.rs, wait_for_bridge_circuit). Already in the graph via arti-client.
+tor-circmgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
 # Snowflake transport (src/snowflake/): KCP reliability layer, and rand_core
 # for filling the session client ID from tor-llcrypto's CautiousRng (both
 # rand_core 0.10 and kcp's deps are already in the graph via arti).

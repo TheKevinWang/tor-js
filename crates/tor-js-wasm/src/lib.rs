@@ -504,10 +504,50 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         .map_err(|e| JsTorError::bootstrap(format!("Bootstrap failed: {}", e)).into_js_value())?;
     info!("Bootstrap complete!");
 
+    // With bridges, bootstrap can finish from a cached directory (a hosted
+    // snapshot, a return visit) before arti has fetched the bridge's own
+    // descriptor, and until it has, no circuit can use the bridge. Exit
+    // circuits retry through that window but onion-service connections fail
+    // at once, so wait for a first circuit through the bridge. arti keeps it
+    // for exit traffic, so the work is not wasted.
+    if !options.bridges.is_empty() {
+        wait_for_bridge_circuit(&tor_client).await;
+    }
+
     Ok(TorClient {
         inner: Some(tor_client),
         tls_config: make_tls_config(),
     })
+}
+
+/// Wait (up to a minute) until arti can build a circuit through its bridge.
+/// Failure is only logged: the caller's own requests will report it.
+async fn wait_for_bridge_circuit(tor_client: &ArtiTorClient<WasmRuntime>) {
+    use futures::future::{select, Either};
+
+    let started = web_time_compat::Instant::now();
+    let circuit = std::pin::pin!(async {
+        let netdir = tor_client.dirmgr().map_err(|e| e.to_string())?.timely_netdir().map_err(|e| e.to_string())?;
+        tor_client
+            .circmgr()
+            .map_err(|e| e.to_string())?
+            .get_or_launch_exit(
+                tor_circmgr::DirInfo::Directory(&netdir),
+                &[],
+                tor_circmgr::isolation::StreamIsolation::no_isolation(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    });
+    let limit = std::pin::pin!(gloo_timers::future::TimeoutFuture::new(60_000));
+    match select(circuit, limit).await {
+        Either::Left((Ok(()), _)) => {
+            info!("First circuit through the bridge after {:.1}s", started.elapsed().as_secs_f64())
+        }
+        Either::Left((Err(e), _)) => tracing::warn!("No circuit through the bridge yet: {e}"),
+        Either::Right(_) => tracing::warn!("No circuit through the bridge after 60s"),
+    }
 }
 
 /// Build a rustls ClientConfig with the Mozilla CA bundle (compiled in via webpki-roots)
