@@ -35,7 +35,9 @@
 mod error;
 mod fast_bootstrap;
 mod fetch;
+mod bridges;
 mod runtime;
+mod snowflake;
 mod storage;
 
 pub use storage::{JsStorage, JsStorageInterface, CachedJsStorage};
@@ -49,7 +51,7 @@ use std::sync::Arc;
 use arti_client::config::CfgPath;
 use arti_client::{TorClient as ArtiTorClient, TorClientConfig};
 use serde::Deserialize;
-use crate::runtime::WasmRuntime;
+use crate::runtime::{PtRoute, WasmRuntime};
 use tracing::{debug, info, error};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -228,6 +230,10 @@ pub struct TorClientOptions {
     storage: Option<JsStorageInterface>,
     /// Optional callback returning bootstrap.zip bytes for fast directory pre-population
     fast_bootstrap: Option<js_sys::Function>,
+    /// Bridge lines, plus an optional JS callback implementing transports
+    /// other than the built-in ones (see `pt.rs`).
+    bridges: Vec<String>,
+    connect_pt: Option<js_sys::Function>,
 }
 
 #[wasm_bindgen]
@@ -248,7 +254,20 @@ impl TorClientOptions {
             connect,
             storage: None,
             fast_bootstrap: None,
+            bridges: Vec::new(),
+            connect_pt: None,
         }
+    }
+
+    /// Use these bridges (Tor `Bridge` line syntax, without the leading
+    /// `Bridge` keyword) as the only guards. `snowflake` bridges are handled
+    /// natively; other transport names they use are implemented by
+    /// `connectPt(transport, settings, addr) => Promise<ArtiSocket>`.
+    #[wasm_bindgen(js_name = withBridges)]
+    pub fn with_bridges(mut self, lines: Vec<String>, connect_pt: Option<js_sys::Function>) -> Self {
+        self.bridges = lines;
+        self.connect_pt = connect_pt;
+        self
     }
 
     /// Set a custom storage implementation for persistent state.
@@ -388,6 +407,32 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         .cache_dir(CfgPath::new("/wasm/cache".to_owned()))
         .state_dir(CfgPath::new("/wasm/state".to_owned()));
 
+    // Bridges become the only guards. Lines naming a transport are split into
+    // a plain bridge for arti and a route the runtime follows (bridges.rs).
+    let mut pt_routes = HashMap::new();
+    for line in &options.bridges {
+        let config_err = |e: String| JsTorError::config(format!("Bad bridge line {:?}: {}", line, e)).into_js_value();
+        let parsed = bridges::parse(line).map_err(config_err)?;
+        let bridge: arti_client::config::BridgeConfigBuilder =
+            parsed.plain.parse().map_err(|e| config_err(format!("{e}")))?;
+        config_builder.bridges().bridges().push(bridge);
+
+        let Some(t) = parsed.transport else { continue };
+        let route = if t.name == snowflake::TRANSPORT_NAME {
+            PtRoute::Snowflake(snowflake::CarrierConfig::from_settings(&t.settings).map_err(config_err)?)
+        } else if let Some(connect_pt) = &options.connect_pt {
+            PtRoute::Js { transport: t.name, settings: t.settings, connect_pt: connect_pt.clone() }
+        } else {
+            return Err(config_err(format!("unsupported transport {:?}", t.name)));
+        };
+        if pt_routes.insert(t.addr, route).is_some() {
+            return Err(config_err(format!("address {} is used by another bridge", t.addr)));
+        }
+    }
+    if !options.bridges.is_empty() {
+        info!("Using {} bridge(s)", options.bridges.len());
+    }
+
     let config = config_builder
         .build()
         .map_err(|e| JsTorError::config(format!("Failed to build config: {}", e)).into_js_value())?;
@@ -395,6 +440,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     // 2. Create WASM runtime with JS connect function
     let mut runtime = WasmRuntime::default();
     runtime.set_connect_fn(options.connect);
+    runtime.set_pt_routes(pt_routes);
 
     // 3. Build the client with optional custom storage
     let mut builder = ArtiTorClient::with_runtime(runtime).config(config);

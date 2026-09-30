@@ -11,7 +11,7 @@
 ///
 /// WASM is single-threaded, so `Send` is trivially satisfied.
 /// Panics if polled from a different thread (impossible on WASM).
-struct SendFut<F>(send_wrapper::SendWrapper<F>);
+pub(crate) struct SendFut<F>(pub(crate) send_wrapper::SendWrapper<F>);
 
 impl<F: Future> Future for SendFut<F> {
     type Output = F::Output;
@@ -38,6 +38,7 @@ use futures::task::{Spawn, SpawnError};
 use futures::{stream, AsyncRead, AsyncWrite, Future};
 use std::fmt::Debug;
 use std::io::{self, Result as IoResult};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -63,6 +64,28 @@ pub struct WasmRuntime {
     /// Optional JS callback for connecting to relay addresses.
     /// Signature: `(addr: string) => Promise<{send, onmessage, onclose, close}>`
     connect_fn: Option<js_sys::Function>,
+    /// Bridge addresses whose connections go through a pluggable transport
+    /// instead of `connect_fn` (see `bridges.rs`).
+    pt_routes: Arc<HashMap<SocketAddr, PtRoute>>,
+}
+
+/// How to open a connection to a pluggable-transport bridge.
+///
+/// arti is given such bridges as plain bridges at their (placeholder) address,
+/// so it dials them like any relay; `connect` below then recognises the address
+/// and opens the transport. This needs only arti's `bridge-client` support, not
+/// its PT manager, which spawns PT binaries and cannot run in a browser.
+#[derive(Clone)]
+pub(crate) enum PtRoute {
+    /// The built-in Snowflake transport.
+    Snowflake(crate::snowflake::CarrierConfig),
+    /// Any other transport, implemented by a JS callback
+    /// `(transport, settings: [string, string][], addr) => Promise<ArtiSocket>`.
+    Js {
+        transport: String,
+        settings: Vec<(String, String)>,
+        connect_pt: js_sys::Function,
+    },
 }
 
 impl Debug for WasmRuntime {
@@ -83,7 +106,13 @@ impl WasmRuntime {
         Self {
             coarse: RealCoarseTimeProvider::new(),
             connect_fn: None,
+            pt_routes: Arc::new(HashMap::new()),
         }
+    }
+
+    /// Route connections to these bridge addresses through their transports.
+    pub(crate) fn set_pt_routes(&mut self, routes: HashMap<SocketAddr, PtRoute>) {
+        self.pt_routes = Arc::new(routes);
     }
 
     /// Set a JS callback for opening socket connections to relay addresses.
@@ -501,7 +530,7 @@ impl StreamOps for NoOpHandle {}
 pub struct StubListener;
 
 impl NetStreamListener<SocketAddr> for StubListener {
-    type Stream = JsProxyStream;
+    type Stream = RelayStream;
     type Incoming = stream::Empty<IoResult<(Self::Stream, SocketAddr)>>;
 
     fn incoming(self) -> Self::Incoming {
@@ -532,9 +561,76 @@ impl NetStreamListener<unix::SocketAddr> for StubListener {
     }
 }
 
+/// Call a JS connect callback with `args` and wrap the socket its Promise
+/// resolves to. Shared by relay connections and JS pluggable transports.
+pub(crate) async fn connect_via_js(f: &js_sys::Function, args: js_sys::Array) -> IoResult<JsProxyStream> {
+    let promise = f
+        .apply(&wasm_bindgen::JsValue::NULL, &args)
+        .map_err(|e| io::Error::other(format!("connect_fn call failed: {:?}", e)))?;
+
+    let promise = js_sys::Promise::from(promise);
+    let socket = SendFut(send_wrapper::SendWrapper::new(
+        wasm_bindgen_futures::JsFuture::from(promise),
+    ))
+    .await
+    .map_err(|e| io::Error::other(format!("connect failed: {:?}", e)))?;
+
+    JsProxyStream::wrap(socket)
+}
+
+/// A connection opened by [`WasmRuntime`]: a JS socket (gateway or TCP), or the
+/// built-in Snowflake transport.
+pub enum RelayStream {
+    Js(JsProxyStream),
+    Snowflake(crate::snowflake::SnowflakeStream),
+}
+
+impl Debug for RelayStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Js(_) => f.write_str("RelayStream::Js"),
+            Self::Snowflake(_) => f.write_str("RelayStream::Snowflake"),
+        }
+    }
+}
+
+impl AsyncRead for RelayStream {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<IoResult<usize>> {
+        match self.get_mut() {
+            Self::Js(s) => Pin::new(s).poll_read(cx, buf),
+            Self::Snowflake(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for RelayStream {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<IoResult<usize>> {
+        match self.get_mut() {
+            Self::Js(s) => Pin::new(s).poll_write(cx, buf),
+            Self::Snowflake(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
+        match self.get_mut() {
+            Self::Js(s) => Pin::new(s).poll_flush(cx),
+            Self::Snowflake(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
+        match self.get_mut() {
+            Self::Js(s) => Pin::new(s).poll_close(cx),
+            Self::Snowflake(s) => Pin::new(s).poll_close(cx),
+        }
+    }
+}
+
+impl StreamOps for RelayStream {}
+
 #[async_trait]
 impl NetStreamProvider<SocketAddr> for WasmRuntime {
-    type Stream = JsProxyStream;
+    type Stream = RelayStream;
     type Listener = StubListener;
     type ConnectOptions = TcpConnectOptions;
     type ListenOptions = TcpListenOptions;
@@ -546,6 +642,23 @@ impl NetStreamProvider<SocketAddr> for WasmRuntime {
         addr: &SocketAddr,
         _options: &Self::ConnectOptions,
     ) -> IoResult<Self::Stream> {
+        match self.pt_routes.get(addr) {
+            Some(PtRoute::Snowflake(config)) => {
+                tracing::debug!("WasmRuntime: connecting to {} via Snowflake", addr);
+                return crate::snowflake::connect(config.clone()).await.map(RelayStream::Snowflake);
+            }
+            Some(PtRoute::Js { transport, settings, connect_pt }) => {
+                tracing::debug!("WasmRuntime: connecting to {} via JS transport {}", addr, transport);
+                let js_settings = js_sys::Array::new();
+                for (k, v) in settings {
+                    js_settings.push(&js_sys::Array::of2(&k.into(), &v.into()));
+                }
+                let args = js_sys::Array::of3(&transport.into(), &js_settings, &addr.to_string().into());
+                return connect_via_js(connect_pt, args).await.map(RelayStream::Js);
+            }
+            None => {}
+        }
+
         let connect_fn = self.connect_fn.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -558,18 +671,9 @@ impl NetStreamProvider<SocketAddr> for WasmRuntime {
         tracing::debug!("WasmRuntime: connecting to {}", addr_str);
 
         // Call JS: connect_fn(addr) -> Promise<socket>
-        let promise = connect_fn
-            .call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::from_str(&addr_str))
-            .map_err(|e| io::Error::other(format!("connect_fn call failed: {:?}", e)))?;
-
-        let promise = js_sys::Promise::from(promise);
-        let socket = SendFut(send_wrapper::SendWrapper::new(
-            wasm_bindgen_futures::JsFuture::from(promise),
-        ))
-        .await
-        .map_err(|e| io::Error::other(format!("connect failed: {:?}", e)))?;
-
-        JsProxyStream::wrap(socket)
+        connect_via_js(connect_fn, js_sys::Array::of1(&addr_str.into()))
+            .await
+            .map(RelayStream::Js)
     }
 
     async fn listen(

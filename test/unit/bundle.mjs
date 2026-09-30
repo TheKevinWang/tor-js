@@ -5,7 +5,7 @@
 // test/anon-rpc-worker uses to build the worker under test.
 
 import { build } from 'esbuild'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -32,5 +32,6 @@ export async function bundleTs(entry, name, { external = [], alias } = {}) {
     ...(alias ? { alias } : {}),
     logLevel: 'silent',
   })
-  return import(outfile)
+  // A file URL, not a path: Node rejects `C:\...` as an ESM specifier.
+  return import(pathToFileURL(outfile).href)
 }

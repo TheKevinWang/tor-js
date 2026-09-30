@@ -353,6 +353,67 @@ describe('TorClient', () => {
     })
   })
 
+  describe('bridges', () => {
+    test('snowflake: true passes the built-in Snowflake bridge lines', async () => {
+      const client = makeClient({ snowflake: true })
+      await client.ready()
+      assert.deepEqual(stub.options.at(-1).bridges, [...wasm.SNOWFLAKE_BRIDGES])
+      assert.match(stub.options.at(-1).bridges[0], /^snowflake 192\.0\.2\.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 .*ws=wss:\/\//)
+      client.close()
+    })
+
+    test('explicit bridges are appended to the Snowflake ones', async () => {
+      const client = makeClient({ snowflake: true, bridges: ['198.51.100.9:443 0123456789ABCDEF0123456789ABCDEF01234567'] })
+      await client.ready()
+      const { bridges } = stub.options.at(-1)
+      assert.equal(bridges.length, wasm.SNOWFLAKE_BRIDGES.length + 1)
+      assert.equal(bridges.at(-1), '198.51.100.9:443 0123456789ABCDEF0123456789ABCDEF01234567')
+      client.close()
+    })
+
+    test('no bridges configured means withBridges is not called', async () => {
+      const client = makeClient()
+      await client.ready()
+      assert.equal(stub.options.at(-1).bridges, undefined)
+      client.close()
+    })
+  })
+
+  describe('bootstrapUrl', () => {
+    test('registers a fast bootstrap that fetches the URL, even without a gateway', async () => {
+      const realFetch = globalThis.fetch
+      const seen = []
+      globalThis.fetch = async (url) => {
+        seen.push(url)
+        return new Response(new Uint8Array([9, 8, 7]), { status: 200 })
+      }
+      try {
+        const client = makeClient({ bootstrapUrl: 'https://example.github.io/bootstrap.zip.zst' })
+        await client.ready()
+        const cb = stub.options.at(-1).fastBootstrap
+        assert.equal(typeof cb, 'function')
+        assert.deepEqual(await cb(), new Uint8Array([9, 8, 7]))
+        assert.deepEqual(seen, ['https://example.github.io/bootstrap.zip.zst'])
+        client.close()
+      } finally {
+        globalThis.fetch = realFetch
+      }
+    })
+
+    test('a non-2xx response is an error', async () => {
+      const realFetch = globalThis.fetch
+      globalThis.fetch = async () => new Response('nope', { status: 404, statusText: 'Not Found' })
+      try {
+        const client = makeClient({ bootstrapUrl: 'https://example.github.io/missing' })
+        await client.ready()
+        await assert.rejects(stub.options.at(-1).fastBootstrap(), /404 Not Found/)
+        client.close()
+      } finally {
+        globalThis.fetch = realFetch
+      }
+    })
+  })
+
   describe('fast bootstrap', () => {
     test('is registered only when a gateway is configured', async () => {
       const without = makeClient({ socketProvider: fakeProvider({ gateway: null }) })
@@ -432,6 +493,18 @@ describe('TorClient', () => {
         new TorClient({ socketProvider: fakeProvider(), storage: new MemoryStorage() }),
       ])
       for (const c of clients) c.close()
+    })
+
+    test('snowflake or explicit bridges satisfy it without a gateway', () => {
+      const clients = asBrowser(() => [
+        new TorClient({ snowflake: true, storage: new MemoryStorage() }),
+        new TorClient({ bridges: ['snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72'], storage: new MemoryStorage() }),
+      ])
+      for (const c of clients) c.close()
+      asBrowser(() => {
+        assert.throws(() => new TorClient({ snowflake: false }), /or `snowflake: true`/)
+        assert.throws(() => new TorClient({ bridges: [] }), /must configure a gateway/)
+      })
     })
 
     test('Node needs no gateway', () => {

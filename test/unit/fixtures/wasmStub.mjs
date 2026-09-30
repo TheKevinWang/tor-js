@@ -73,6 +73,12 @@ export class TorClientOptions {
     this.fastBootstrap = cb
     return this
   }
+
+  withBridges(lines, connectPt) {
+    this.bridges = lines
+    this.connectPt = connectPt
+    return this
+  }
 }
 
 export class TorClient {

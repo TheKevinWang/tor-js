@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # the fork's WASM-capable variants (WasmRuntime, custom storage, zstd-wasm,
 # etc.) and are not published to crates.io. This crate used to live inside that
 # repo at crates/tor-js; see git history of voltrevo/arti for the originals.
-# Core arti-client (no bridge/PT needed — connects to regular relays via WS proxy)
+# Core arti-client (relays via the JS connect callback, or bridges — see below)
 arti-client = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = [
     "experimental-api",
     # `.onion` connections. Pulls in tor-hsclient + tor-hscrypto and costs
@@ -23,7 +23,16 @@ arti-client = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd
     # whether or not a caller ever dials one. The CDN entry point is unaffected
     # in JS terms; its growth is in the fetched wasm.
     "onion-service-client",
+    # Bridges as guards (Snowflake). Deliberately NOT "pt-client": that pulls
+    # in tor-ptmgr, which spawns PT binaries. Transports are instead dialed by
+    # WasmRuntime itself (src/bridges.rs, src/snowflake/).
+    "bridge-client",
 ]}
+# Snowflake transport (src/snowflake/): KCP reliability layer, and rand_core
+# for filling the session client ID from tor-llcrypto's CautiousRng (both
+# rand_core 0.10 and kcp's deps are already in the graph via arti).
+kcp = "0.6"
+rand_core = "0.10"
 tor-rtcompat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
 tor-persist = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
 tor-dirmgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["zstd-wasm"] }
@@ -56,6 +65,12 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3.69", features = [
     "AbortSignal",
+    # Snowflake carriers (src/snowflake/)
+    "BinaryType",
+    "CloseEvent",
+    "Event",
+    "MessageEvent",
+    "WebSocket",
     "Crypto",
     "SubtleCrypto",
     "console",

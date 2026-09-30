@@ -44,6 +44,31 @@ export type TorClientOptions = {
 
   /** Optional custom socket provider. When set, overrides the default ArtiSocketProvider created from the gateway address. */
   socketProvider?: ArtiSocketProvider;
+
+  /**
+   * Reach Tor through Tor Project's Snowflake service instead of a gateway.
+   * Works in browsers with no server of your own. Shorthand for
+   * `bridges: SNOWFLAKE_BRIDGES`; combined with `bridges`, both lists are used.
+   */
+  snowflake?: boolean;
+
+  /**
+   * Bridges to use as the only guards, in Tor `Bridge` line syntax without the
+   * `Bridge` keyword, e.g. `snowflake 192.0.2.3:80 <fingerprint> ws=wss://...`.
+   * The `snowflake` transport is built in; plain bridges (`ip:port fingerprint`)
+   * are dialed through the socket provider like any relay.
+   */
+  bridges?: string[];
+
+  /**
+   * URL of a directory snapshot (`bootstrap.zip` or `bootstrap.zip.zst`, the
+   * format tor-js-gateway serves) fetched with plain `fetch()` to pre-fill an
+   * empty directory cache. Lets a static site host the snapshot next to the
+   * page so a first visit skips downloading the directory over a bridge. The
+   * documents are verified as if fetched from the network, so the host need
+   * not be trusted. Takes precedence over the gateway's snapshot.
+   */
+  bootstrapUrl?: string;
 };
 
 export type { TorStorage } from '#wasm';

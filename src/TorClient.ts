@@ -9,6 +9,11 @@ import type { TorClientOptions, FetchInit, LogLevel } from './types.js';
 import { Log, levelEnabled } from './Log.js';
 import { createAutoStorage } from './storage/index.js';
 import { ArtiSocketProvider } from './socketProvider.js';
+import { SNOWFLAKE_BRIDGES } from './snowflake.js';
+
+function bridgeLines(options: TorClientOptions): string[] {
+  return [...(options.snowflake ? SNOWFLAKE_BRIDGES : []), ...(options.bridges ?? [])];
+}
 
 function isBrowser(): boolean {
   const g = globalThis as any;
@@ -33,10 +38,10 @@ export class TorClient {
     const hasGateway = Array.isArray(options.gateway)
       ? options.gateway.length > 0
       : !!options.gateway;
-    if (isBrowser() && !hasGateway && !options.socketProvider) {
+    if (isBrowser() && !hasGateway && !options.socketProvider && bridgeLines(options).length === 0) {
       throw new Error(
         'TorClient: in the browser, you must configure a gateway (KPS address "ip:port:certhash") ' +
-        'because browsers can\'t open regular TCP sockets.',
+        'or `snowflake: true`, because browsers can\'t open regular TCP sockets.',
       );
     }
     // Default to a discarding sink so a library never spams a host page's
@@ -85,12 +90,31 @@ export class TorClient {
     const storage = options.storage ?? createAutoStorage();
     wasmOptions = wasmOptions.withStorage(storage);
 
+    // Bridges (Snowflake included) become the only guards; their transports
+    // run inside the WASM module.
+    const bridges = bridgeLines(options);
+    if (bridges.length > 0) {
+      wasmOptions = wasmOptions.withBridges(bridges, undefined);
+    }
+
     // Auto-attempt fast bootstrap from gateway — only when one is configured.
     // The archive is zstd-compressed; the WASM side decompresses it.
     // Go through the provider rather than capturing a gateway: it picks per
     // attempt (one gateway on the happy path) and falls over if that one is
     // down, instead of silently degrading to slow bootstrap.
-    if (sp.gateway) {
+    const bootstrapUrl = options.bootstrapUrl;
+    if (bootstrapUrl) {
+      wasmOptions = wasmOptions.withFastBootstrap(async (): Promise<Uint8Array> => {
+        this.log.info(`Fast bootstrap: fetching ${bootstrapUrl}...`);
+        const res = await fetch(bootstrapUrl);
+        if (!res.ok) {
+          throw new Error(`Fast bootstrap fetch failed: ${res.status} ${res.statusText}`);
+        }
+        const body = new Uint8Array(await res.arrayBuffer());
+        this.log.info(`Fast bootstrap: received ${body.byteLength} bytes`);
+        return body;
+      });
+    } else if (sp.gateway) {
       wasmOptions = wasmOptions.withFastBootstrap(async (): Promise<Uint8Array> => {
         this.log.info('Fast bootstrap: fetching bootstrap.zip.zst...');
         const res = await sp.gatewayFetch('/bootstrap.zip.zst');

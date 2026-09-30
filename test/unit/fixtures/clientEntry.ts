@@ -10,3 +10,4 @@ export { TorClient } from '../../../src/TorClient.js';
 export { Log } from '../../../src/Log.js';
 export { MemoryStorage } from '../../../src/storage/index.js';
 export { tor } from '../../../src/singleton.js';
+export { SNOWFLAKE_BRIDGES } from '../../../src/snowflake.js';
