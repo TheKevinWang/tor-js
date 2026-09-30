@@ -14,7 +14,8 @@
 
 import type { FetchInit } from '../types.js';
 import type { CookieJar } from './cookieJar.js';
-import { canonicalOnion, isAllowedOnion, matchTorRule, routeFor, visiblePathFor, type Route, type SiteManifest, type TorRule } from './manifest.js';
+import { isAllowedOnion, visiblePathFor, type Route, type SiteManifest, type TorRule } from './manifest.js';
+import { SiteRouter } from './router.js';
 
 /** A request in a form that survives postMessage: the Service Worker builds it from a `Request`. */
 export interface SiteRequest {
@@ -49,7 +50,7 @@ export interface TorHttpOptions {
 const DROP_REQUEST = new Set([
   'host', 'connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer',
   'transfer-encoding', 'upgrade', 'content-length', 'cookie', 'cookie2', 'accept-encoding',
-  'origin', 'referer', 'expect',
+  'origin', 'referer', 'expect', 'user-agent',
 ]);
 
 /** Response headers never passed to the page. */
@@ -61,38 +62,33 @@ const DROP_RESPONSE = new Set([
   'strict-transport-security', 'alt-svc', 'clear-site-data', 'public-key-pins',
 ]);
 
+/**
+ * Every visitor looks the same to the backend, as in Tor Browser: the page's
+ * own `User-Agent` is dropped (tor-js would otherwise forward the real
+ * browser's, a fingerprint that Tor exists to remove) and this Firefox ESR
+ * identity is sent instead. Backends that filter bots also tend to reject
+ * requests that are missing the usual browser headers, so `Accept-Language`
+ * gets Tor Browser's default when the page did not set one.
+ */
+export const TOR_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0';
+const DEFAULT_ACCEPT_LANGUAGE = 'en-US,en;q=0.5';
+
 const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
 
 export class TorHttp {
+  private readonly router: SiteRouter;
   private readonly scopePath: string;
   private readonly visibleOrigin: string;
 
   constructor(private readonly opts: TorHttpOptions) {
-    this.scopePath = opts.scopePath.endsWith('/') ? opts.scopePath : opts.scopePath + '/';
-    this.visibleOrigin = new URL(opts.visibleOrigin).origin;
+    this.router = new SiteRouter(opts.manifest, opts.visibleOrigin, opts.scopePath);
+    this.scopePath = this.router.scopePath;
+    this.visibleOrigin = this.router.visibleOrigin;
   }
 
-  /**
-   * Where `url` is served from, or null when the adapter has no opinion (it is
-   * outside the scope or on a foreign host) and the browser should handle it.
-   */
+  /** Where `url` is served from; see {@link SiteRouter.route}. */
   route(url: string): Route | null {
-    let u: URL;
-    try {
-      u = new URL(url);
-    } catch {
-      return null;
-    }
-    if (u.origin === this.visibleOrigin) {
-      const rel = this.relativePath(u.pathname);
-      return rel === null ? null : routeFor(this.opts.manifest, rel);
-    }
-    const onion = canonicalOnion(this.opts.manifest, u.origin);
-    if (onion) {
-      // A page addressed the onion directly: there is only one place it can go.
-      return { kind: 'tor', onion, path: u.pathname };
-    }
-    return null;
+    return this.router.route(url);
   }
 
   async handle(req: SiteRequest): Promise<SiteResponse> {
@@ -102,7 +98,7 @@ export class TorHttp {
     }
     const search = new URL(req.url).search;
     const target = route.onion + route.path + search;
-    const rule = this.ruleFor(req.url);
+    const rule = this.router.ruleFor(req.url);
     const method = req.method.toUpperCase();
     const hasBody = req.body !== null && req.body.byteLength > 0 && method !== 'GET' && method !== 'HEAD';
 
@@ -151,20 +147,6 @@ export class TorHttp {
 
   // -------------------------------------------------------------------------
 
-  /** The manifest rule a visible-origin URL was routed by (undefined for direct onion URLs). */
-  private ruleFor(url: string): TorRule | undefined {
-    const u = new URL(url);
-    if (u.origin !== this.visibleOrigin) return undefined;
-    const rel = this.relativePath(u.pathname);
-    return rel === null ? undefined : matchTorRule(this.opts.manifest, rel)?.rule;
-  }
-
-  private relativePath(pathname: string): string | null {
-    if (pathname.startsWith(this.scopePath)) return '/' + pathname.slice(this.scopePath.length);
-    if (pathname + '/' === this.scopePath) return '/';
-    return null;
-  }
-
   private requestHeaders(req: SiteRequest, target: string, onion: string, method: string): Record<string, string> {
     const out: Record<string, string> = {};
     let hasRange = false;
@@ -178,6 +160,8 @@ export class TorHttp {
     // backend's point of view the request comes from its own origin.
     if (req.headers.some(([k]) => k.toLowerCase() === 'origin')) out.origin = onion;
     if (req.headers.some(([k]) => k.toLowerCase() === 'referer')) out.referer = onion + '/';
+    out['user-agent'] = TOR_USER_AGENT;
+    if (!('accept-language' in out)) out['accept-language'] = DEFAULT_ACCEPT_LANGUAGE;
     const cookie = this.opts.jar.headerFor(target);
     if (cookie) out.cookie = cookie;
     if (!hasRange && method !== 'HEAD') out['accept-encoding'] = 'gzip';

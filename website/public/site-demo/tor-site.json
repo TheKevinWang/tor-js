@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "onion": "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion",
+  "tor": [{ "match": "/duck/**", "strip": "/duck" }],
+  "client": {
+    "snowflake": true,
+    "wasmUrl": "tor_js_bg.wasm",
+    "bootstrapUrl": "bootstrap.zip.zst"
+  }
+}

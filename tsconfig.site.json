@@ -1,0 +1,15 @@
+{
+  // Type-checks the worker entry points of the site adapter (src/site/sw.ts,
+  // src/site/hostWorker.ts) against the WebWorker lib, which cannot share a
+  // program with the DOM lib the rest of src/ uses.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "WebWorker", "WebWorker.Iterable"],
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": "."
+  },
+  "include": ["src/site/sw.ts"],
+  "exclude": ["node_modules", "dist"]
+}

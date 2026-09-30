@@ -22,6 +22,7 @@ async function main() {
     generateDeclarationMaps,
     copyWasmFiles,
     buildWorker,
+    buildSite,
     verifyDeclarationMaps,
     verifyGzipSizes,
   ];
@@ -87,6 +88,65 @@ export async function buildAnonRpcWorker({ outfile, ensureWasm = false }) {
   const out = readFileSync(outfile);
   // sha256 is a build fingerprint; the on-chain pin is keccak256 (specifier tooling).
   return { bytes: out.length, sha256: createHash('sha256').update(out).digest('hex') };
+}
+
+// Bundle the static-site adapter (src/site/): the Service Worker, the classic
+// <script> that registers it, and the persistent host worker. Unlike the
+// anon-rpc worker these do NOT embed the WASM: a Service Worker script is
+// re-checked by the browser for changes, so it stays small and loads
+// tor_js_bg.wasm from the site (see `client.wasmUrl` in the manifest).
+async function buildSite() {
+  const outDir = resolve(distDir, 'site');
+  const sizes = await buildSiteBundles({ outDir });
+  for (const [name, bytes] of Object.entries(sizes)) {
+    console.log(`Built site adapter: dist/site/${name} ${(bytes / 1024).toFixed(0)} kB`);
+  }
+}
+
+/**
+ * Bundle the site adapter's scripts to standalone IIFEs in `outDir`.
+ * Exported so the browser e2e can build the exact shipped files.
+ * @param {{ outDir: string }} opts
+ * @returns {Promise<Record<string, number>>} bytes per output file
+ */
+export async function buildSiteBundles({ outDir }) {
+  const version = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')).version;
+  mkdirSync(outDir, { recursive: true });
+  const entries = {
+    'tor-site-sw.js': 'src/site/sw.ts',
+    'tor-site.js': 'src/site/page.ts',
+    'tor-site-host.js': 'src/site/hostWorker.ts',
+  };
+  const sizes = {};
+  for (const [out, entry] of Object.entries(entries)) {
+    if (!existsSync(resolve(__dirname, entry))) continue; // hostWorker arrives in a later milestone
+    const outfile = resolve(outDir, out);
+    await esbuildBuild({
+      entryPoints: [resolve(__dirname, entry)],
+      outfile,
+      bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true, logLevel: 'error',
+      // Gateway/Node-only paths tor-js keeps behind dynamic imports; never run here.
+      external: [
+        '@kpstreams/webrtc-client', '@kpstreams/quic-client', '@kpstreams/core',
+        'node:net', 'node:stream', 'node:crypto',
+        'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url',
+      ],
+      define: {
+        __WASM_SHA256__: '""',
+        __PACKAGE_VERSION__: JSON.stringify(version),
+        // The wasm-bindgen glue only reads this when no WASM source is given; the worker always gives one.
+        'import.meta.url': 'self.location.href',
+      },
+      plugins: [{
+        name: 'torjs-wasm-resolve',
+        setup(b) {
+          b.onResolve({ filter: /^#wasm$/ }, () => ({ path: resolve(pkgDir, 'tor_js.js') }));
+        },
+      }],
+    });
+    sizes[out] = readFileSync(outfile).length;
+  }
+  return sizes;
 }
 
 function cleanDist() {

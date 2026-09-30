@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Static site, onion backend</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- The one line that makes this site dynamic: registers the Service Worker described by tor-site.json. -->
+  <script src="tor-site.js" data-sw="tor-site-sw.js" data-manifest="tor-site.json"></script>
+</head>
+<body>
+  <main>
+    <h1>A static site with an onion backend</h1>
+    <p class="lede">
+      Every file here is served by a plain static file server. Paths under <code>duck/</code> are
+      not files on that server: <code>tor-site.json</code> sends them to DuckDuckGo's onion service, and a Service Worker
+      fetches them through Tor. This page's own code uses ordinary relative URLs and knows nothing about Tor.
+    </p>
+
+    <p id="status" class="status"><span class="dot" id="dot"></span><span id="status-text">Starting…</span></p>
+
+    <section>
+      <h2>1. Ordinary <code>fetch()</code> calls</h2>
+      <button id="run" disabled>Run three requests</button>
+      <table id="log">
+        <thead><tr><th>Request</th><th>Served by</th><th>Status</th><th>Bytes</th><th>Time</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <pre id="preview" hidden></pre>
+    </section>
+
+    <section>
+      <h2>2. A plain HTML form and link</h2>
+      <p>These are ordinary navigations; the server-generated HTML comes back from the onion service.</p>
+      <form action="duck/html/" method="get">
+        <input name="q" value="tor project" aria-label="search" />
+        <button type="submit">Search (form GET)</button>
+      </form>
+      <p><a href="duck/robots.txt">duck/robots.txt</a> · <a href="duck/">duck/</a></p>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

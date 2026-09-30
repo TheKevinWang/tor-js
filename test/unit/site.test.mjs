@@ -398,6 +398,17 @@ describe('TorHttp', () => {
     assert.equal(h['x-custom'], 'kept')
   })
 
+  test("every visitor sends the same User-Agent, never the browser's own", async () => {
+    const { torHttp } = make()
+    seen = []
+    await torHttp.handle(req(`${VISIBLE}/api/echo`, { headers: [['User-Agent', 'Chrome/999 real-browser']] }))
+    await torHttp.handle(req(`${VISIBLE}/api/echo`, { headers: [['Accept-Language', 'de']] }))
+    assert.equal(seen[0].headers['user-agent'], m.TOR_USER_AGENT)
+    assert.equal(seen[0].headers['accept-language'], 'en-US,en;q=0.5')
+    assert.equal(seen[1].headers['user-agent'], m.TOR_USER_AGENT)
+    assert.equal(seen[1].headers['accept-language'], 'de', 'a language the page chose is kept')
+  })
+
   test('response headers that would act on the static site are dropped', async () => {
     const { torHttp } = make()
     const r = await torHttp.handle(req(`${VISIBLE}/api/hsts`))

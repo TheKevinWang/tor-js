@@ -1,0 +1,5 @@
+# Staged by scripts/stage-site-demo.mjs from the tor-js build.
+tor-site-sw.js
+tor-site.js
+tor_js_bg.wasm
+bootstrap.zip.zst
