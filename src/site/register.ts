@@ -23,6 +23,11 @@ export interface RegisterOptions {
   manifest?: string;
   /** Service Worker scope. Default: the script's directory. */
   scope?: string;
+  /**
+   * URL of the persistent Tor host worker. Default `tor-site-host.js`, next to
+   * the page. Unused when the manifest sets `client.host` to "service-worker".
+   */
+  hostScript?: string;
   /** Start connecting to Tor as soon as the worker is active. Default true. */
   prewarm?: boolean;
   /** Print the Tor client's log to this page's console. Also on when `localStorage["tor-site-debug"]` is set. */
@@ -67,7 +72,26 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
   await controlled();
   const active = navigator.serviceWorker.controller ?? registration.active;
   active?.postMessage({ type: 'tor-site-hello' });
-  if (opts.prewarm !== false) active?.postMessage({ type: 'tor-site-warm' });
+
+  // Where the Tor client runs. By default in a persistent worker that the
+  // Service Worker is connected to; the Service Worker itself only routes.
+  const manifestUrl = new URL(opts.manifest ?? 'tor-site.json', swUrl).href;
+  const wantHost = (await manifestHostMode(manifestUrl)) !== 'service-worker';
+  const host = wantHost
+    ? startHost({
+        script: new URL(opts.hostScript ?? 'tor-site-host.js', document.baseURI).href,
+        name: `tor-site:${new URL(registration.scope).pathname}`,
+        config: {
+          manifestUrl,
+          visibleOrigin: location.origin,
+          scopePath: new URL(registration.scope).pathname,
+        },
+      })
+    : null;
+  if (opts.prewarm !== false) {
+    if (host) host.warm();
+    else active?.postMessage({ type: 'tor-site-warm' });
+  }
 
   return {
     registration,
@@ -99,6 +123,60 @@ function debugFlag(): boolean {
   } catch {
     return false;
   }
+}
+
+interface HostConfig {
+  manifestUrl: string;
+  visibleOrigin: string;
+  scopePath: string;
+}
+
+/** `client.host` from the manifest ("auto" when it cannot be read; the worker validates the file). */
+async function manifestHostMode(manifestUrl: string): Promise<string> {
+  try {
+    const res = await fetch(manifestUrl);
+    const json = (await res.json()) as { client?: { host?: string } };
+    return json.client?.host ?? 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+/**
+ * Start the persistent host worker (a SharedWorker, or a dedicated Worker where
+ * that does not exist) and connect the Service Worker to it. A fresh
+ * MessageChannel is made per attachment: one end goes to the host, the other to
+ * the Service Worker, which forgets its ports whenever the browser restarts it
+ * and then asks (`tor-site-need-host`) for a new one.
+ */
+function startHost(opts: { script: string; name: string; config: HostConfig }): { warm(): void } | null {
+  let control: MessagePort | Worker;
+  try {
+    if (typeof SharedWorker !== 'undefined') {
+      const shared = new SharedWorker(opts.script, { name: opts.name });
+      shared.port.start();
+      control = shared.port;
+    } else {
+      control = new Worker(opts.script, { name: opts.name });
+    }
+  } catch (e) {
+    console.warn('[tor-site] cannot start the Tor host worker; Tor will run inside the Service Worker', e);
+    return null;
+  }
+
+  const attach = () => {
+    const sw = navigator.serviceWorker.controller;
+    if (!sw) return;
+    const channel = new MessageChannel();
+    control.postMessage({ t: 'attach', port: channel.port2, config: opts.config }, [channel.port2]);
+    sw.postMessage({ type: 'tor-site-host', port: channel.port1 }, [channel.port1]);
+  };
+  attach();
+  navigator.serviceWorker.addEventListener('controllerchange', attach);
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if ((event.data as { type?: string } | null)?.type === 'tor-site-need-host') attach();
+  });
+  return { warm: () => control.postMessage({ t: 'warm', config: opts.config }) };
 }
 
 /** Resolves once a Service Worker controls this page (immediately when one already does). */

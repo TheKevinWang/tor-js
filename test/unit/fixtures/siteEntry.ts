@@ -3,3 +3,4 @@ export * from '../../../src/site/manifest.js';
 export * from '../../../src/site/cookieJar.js';
 export * from '../../../src/site/torHttp.js';
 export * from '../../../src/site/router.js';
+export * from '../../../src/site/rpc.js';

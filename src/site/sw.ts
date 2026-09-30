@@ -15,6 +15,7 @@ import { setWasmUrl } from '../wasm.js';
 import { parseManifest, type SiteManifest } from './manifest.js';
 import { SiteRouter } from './router.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
+import { PortBackend } from './rpc.js';
 import { errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
 
 declare const self: ServiceWorkerGlobalScope;
@@ -27,8 +28,13 @@ const visibleOrigin = self.location.origin;
 interface Loaded {
   manifest: SiteManifest;
   router: SiteRouter;
-  backend: SiteBackend;
+  /** A Tor client inside this worker: used when no host is attached, or when the manifest asks for it. */
+  local: LocalBackend;
 }
+
+/** Tor hosts (persistent workers) that pages have attached, oldest first. */
+const hosts: PortBackend[] = [];
+let hostArrived: (() => void) | null = null;
 
 let loaded: Loaded | null = null;
 let loading: Promise<Loaded> | null = null;
@@ -42,13 +48,13 @@ function load(): Promise<Loaded> {
     const manifest = parseManifest(await res.json());
     setWasmUrl(new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', manifestUrl).href);
     const router = new SiteRouter(manifest, visibleOrigin, scopePath);
-    const backend = new LocalBackend({
+    const local = new LocalBackend({
       manifest, manifestUrl, visibleOrigin, scopePath,
       where: 'service-worker',
       onStatus: publishStatus,
       onLog: publishLog,
     });
-    return { manifest, router, backend };
+    return { manifest, router, local };
   })();
   loading = attempt.then(
     (v) => (loaded = v),
@@ -89,11 +95,54 @@ self.addEventListener('message', (event) => {
   if (data.type === 'tor-site-hello') {
     (event.source as Client | null)?.postMessage({ type: 'tor-site-status', status: lastStatus });
   } else if (data.type === 'tor-site-warm') {
-    // waitUntil keeps the worker alive while Tor connects; without it the browser
-    // stops an idle worker after ~30 s and the connection attempt is lost.
-    event.waitUntil(load().then((l) => l.backend.warm()).catch(reportLoadError));
+    // Only sent when no host worker is used. waitUntil keeps this worker alive
+    // while Tor connects; without it the browser stops an idle worker after
+    // ~30 s and the connection attempt is lost.
+    event.waitUntil(load().then((l) => l.local.warm()).catch(reportLoadError));
+  } else if (data.type === 'tor-site-host') {
+    const port = (data as { port?: MessagePort }).port;
+    if (port) attachHost(port);
   }
 });
+
+function attachHost(port: MessagePort): void {
+  hosts.push(new PortBackend(port, { onStatus: publishStatus, onLog: publishLog }));
+  // Old attachments are for hosts that may be gone; keep a few, newest last.
+  while (hosts.length > 4) hosts.shift()!.close();
+  hostArrived?.();
+}
+
+/** The newest attached host that answers, dropping the ones that do not. */
+async function liveHost(): Promise<PortBackend | null> {
+  for (let i = hosts.length - 1; i >= 0; i--) {
+    const h = hosts[i];
+    if (Date.now() - h.lastSeen < 10_000 || (await h.ping())) return h;
+    hosts.splice(i, 1);
+    h.close();
+  }
+  return null;
+}
+
+/**
+ * Where a Tor request is served: the persistent host when one is attached and
+ * alive; else, if pages are open, ask them to attach one (this worker may have
+ * just restarted and forgotten its ports); else Tor inside this worker.
+ */
+async function pickBackend(l: Loaded): Promise<SiteBackend> {
+  if (l.manifest.client.host === 'service-worker') return l.local;
+  let host = await liveHost();
+  if (!host) {
+    const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (pages.length > 0) {
+      const arrived = new Promise<void>((resolve) => (hostArrived = resolve));
+      for (const p of pages) p.postMessage({ type: 'tor-site-need-host' });
+      await Promise.race([arrived, new Promise((r) => setTimeout(r, 2000))]);
+      hostArrived = null;
+      host = await liveHost();
+    }
+  }
+  return host ?? l.local;
+}
 
 function reportLoadError(e: unknown): void {
   const message = e instanceof Error ? e.message : String(e);
@@ -112,7 +161,7 @@ self.addEventListener('fetch', (event) => {
   if (loaded) {
     const route = loaded.router.route(url);
     if (!route || route.kind !== 'tor') return; // static: the browser handles it
-    event.respondWith(serve(event, loaded.backend));
+    event.respondWith(serve(event, loaded));
     return;
   }
 
@@ -122,7 +171,7 @@ self.addEventListener('fetch', (event) => {
     load().then(
       (l) => {
         const route = l.router.route(url);
-        return route && route.kind === 'tor' ? serve(event, l.backend) : fetch(request);
+        return route && route.kind === 'tor' ? serve(event, l) : fetch(request);
       },
       (e) => {
         reportLoadError(e);
@@ -134,7 +183,7 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-async function serve(event: FetchEvent, backend: SiteBackend): Promise<Response> {
+async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
   const request = event.request;
   try {
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
@@ -146,6 +195,7 @@ async function serve(event: FetchEvent, backend: SiteBackend): Promise<Response>
       redirect: request.redirect,
       signal: request.signal,
     };
+    const backend = await pickBackend(l);
     const response = await backend.handle(siteRequest);
     return toResponse(response, event);
   } catch (e) {

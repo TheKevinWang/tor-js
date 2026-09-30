@@ -19,6 +19,7 @@ const opts: RegisterOptions = {};
 if (d.sw) opts.sw = new URL(d.sw, document.baseURI).href;
 if (d.manifest) opts.manifest = d.manifest;
 if (d.scope) opts.scope = d.scope;
+if (d.host) opts.hostScript = new URL(d.host, document.baseURI).href;
 if (d.prewarm === 'false') opts.prewarm = false;
 if (d.debug === 'true') opts.debug = true;
 

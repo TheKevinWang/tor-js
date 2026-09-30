@@ -10,6 +10,6 @@
     "declarationMap": false,
     "rootDir": "."
   },
-  "include": ["src/site/sw.ts"],
+  "include": ["src/site/sw.ts", "src/site/hostWorker.ts"],
   "exclude": ["node_modules", "dist"]
 }
