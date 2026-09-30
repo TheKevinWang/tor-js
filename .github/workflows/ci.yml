@@ -131,6 +131,12 @@ jobs:
 
       # The website consumes tor-js via a file:.. link, so the package dist
       # above must exist first.
+      # onion.html (gatewayless Snowflake demo) starts from a directory snapshot
+      # hosted next to it. Best effort: the page falls back to downloading the
+      # directory over the bridge if the file is missing, and a snapshot older
+      # than the consensus lifetime (3h) still saves the microdescriptors.
+      - name: Directory snapshot for the Snowflake demo
+        run: node scripts/make-bootstrap.mjs website/public/bootstrap.zip.zst || echo "snapshot skipped"
       - name: Build website
         working-directory: website
         run: |

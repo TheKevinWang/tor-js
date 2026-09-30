@@ -8,7 +8,7 @@ document.body.classList.add('has-drawer');
 
 const $ = (id) => document.getElementById(id);
 const dot = $('dot'), statusEl = $('status');
-const carrierSel = $('carrier'), coldBox = $('cold');
+const carrierSel = $('carrier'), coldBox = $('cold'), snapshotBox = $('snapshot');
 const connectBtn = $('connect'), disconnectBtn = $('disconnect');
 const stepRequest = $('step-request'), stepResponse = $('step-response');
 const urlInput = $('url'), followBox = $('follow'), fetchBtn = $('fetch');
@@ -63,7 +63,7 @@ function bridgesFor(carrier, lib) {
 
 connectBtn.addEventListener('click', async () => {
   connectBtn.disabled = true;
-  carrierSel.disabled = coldBox.disabled = true;
+  carrierSel.disabled = coldBox.disabled = snapshotBox.disabled = true;
   setStatus('loading', 'Connecting…');
   log('info', 'Loading tor-js…');
 
@@ -76,6 +76,8 @@ connectBtn.addEventListener('click', async () => {
       log: new Log({ rawLog: (level, ...args) => log(level, args.join(' ')) }),
       logLevel: 'info',
       ...(coldBox.checked ? { storage: new storage.MemoryStorage() } : {}),
+      // Resolved against the page, so it works under any path (e.g. GitHub Pages).
+      ...(snapshotBox.checked ? { bootstrapUrl: new URL('bootstrap.zip.zst', location.href).href } : {}),
     });
     const tick = setInterval(() => {
       setStatus('loading', `Connecting… ${((performance.now() - t0) / 1000).toFixed(0)}s`);
@@ -97,7 +99,7 @@ connectBtn.addEventListener('click', async () => {
     client?.close();
     client = null;
     connectBtn.disabled = false;
-    carrierSel.disabled = coldBox.disabled = false;
+    carrierSel.disabled = coldBox.disabled = snapshotBox.disabled = false;
   }
 });
 
@@ -106,7 +108,7 @@ disconnectBtn.addEventListener('click', () => {
   client = null;
   setStatus('', 'Disconnected');
   connectBtn.disabled = false;
-  carrierSel.disabled = coldBox.disabled = false;
+  carrierSel.disabled = coldBox.disabled = snapshotBox.disabled = false;
   disconnectBtn.disabled = true;
   stepRequest.classList.add('locked');
   stepResponse.classList.add('locked');

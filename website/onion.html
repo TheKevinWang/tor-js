@@ -37,8 +37,11 @@
         <div class="field">
           <label><input type="checkbox" id="cold" /> Cold start: ignore the Tor directory cached from earlier visits</label>
         </div>
+        <div class="field">
+          <label><input type="checkbox" id="snapshot" checked /> Start from the directory snapshot hosted with this page (<span class="mono">bootstrap.zip.zst</span>)</label>
+        </div>
         <p class="notice">
-          The first visit downloads the Tor directory (a few MB) through the bridge, typically in under 10 seconds; later visits reuse the copy cached in this browser.
+          A first visit needs the Tor directory: either the snapshot hosted next to this page (a static file, verified like any directory document, so the host need not be trusted) or a few MB downloaded through the bridge. Later visits reuse the copy cached in this browser.
         </p>
         <div class="btn-row">
           <button class="btn" id="connect">Connect</button>
