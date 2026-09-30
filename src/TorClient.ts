@@ -9,10 +9,13 @@ import type { TorClientOptions, FetchInit, LogLevel } from './types.js';
 import { Log, levelEnabled } from './Log.js';
 import { createAutoStorage } from './storage/index.js';
 import { ArtiSocketProvider } from './socketProvider.js';
-import { SNOWFLAKE_BRIDGES } from './snowflake.js';
+import { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from './snowflake.js';
 
 function bridgeLines(options: TorClientOptions): string[] {
-  return [...(options.snowflake ? SNOWFLAKE_BRIDGES : []), ...(options.bridges ?? [])];
+  const snowflake = options.snowflake === 'webrtc' ? SNOWFLAKE_WEBRTC_BRIDGES
+    : options.snowflake ? SNOWFLAKE_BRIDGES
+    : [];
+  return [...snowflake, ...(options.bridges ?? [])];
 }
 
 function isBrowser(): boolean {

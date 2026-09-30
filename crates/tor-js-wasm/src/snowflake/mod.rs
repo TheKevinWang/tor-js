@@ -16,11 +16,20 @@
 //!
 //! - `ws=wss://...`: dial that WebSocket directly (the Snowflake server's
 //!   proxy-facing endpoint). tor-js-specific; the official client never does.
+//! - otherwise `url=<broker>` (plus `ice=stun:...,stun:...` and
+//!   `fingerprint=`, as in Tor Browser's Snowflake lines): ask the broker for
+//!   a volunteer proxy and reach it over a WebRTC data channel. Needs a page
+//!   with `RTCPeerConnection`.
+//!
+//! Sessions are opened by a task of their own ([`pool`]), so one that takes
+//! longer than arti's dial timeout is still there for arti's next attempt.
 
 mod kcp_stream;
+mod pool;
 mod session;
 mod smux;
 mod turbo;
+mod webrtc;
 mod websocket;
 
 use std::io;
@@ -45,10 +54,14 @@ impl<T: AsyncRead + AsyncWrite> Duplex for T {}
 
 type Carrier = Pin<Box<dyn Duplex>>;
 
+/// The full Snowflake stack: bytes in and out of the bridge's Tor port.
+type Stack = Pin<Box<dyn Duplex>>;
+
 /// How to reach the Snowflake server, from the bridge line's settings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CarrierConfig {
     WebSocket { url: String },
+    WebRtc(webrtc::WebRtcConfig),
 }
 
 impl CarrierConfig {
@@ -60,7 +73,25 @@ impl CarrierConfig {
             }
             return Ok(Self::WebSocket { url });
         }
-        Err("snowflake bridge line needs ws=wss://... (the direct WebSocket carrier)".into())
+        if let Some(broker_url) = setting("url") {
+            if !broker_url.starts_with("https://") {
+                return Err(format!("snowflake url= must be an https:// broker URL, got {broker_url:?}"));
+            }
+            let fingerprint = setting("fingerprint")
+                .ok_or("snowflake WebRTC bridge line needs fingerprint= (it picks the bridge at the broker)")?;
+            let stun_urls: Vec<String> = setting("ice")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if stun_urls.is_empty() || stun_urls.iter().any(|u| !u.starts_with("stun:")) {
+                return Err("snowflake WebRTC bridge line needs ice=stun:host:port,...".into());
+            }
+            return Ok(Self::WebRtc(webrtc::WebRtcConfig { broker_url, fingerprint, stun_urls }));
+        }
+        Err("snowflake bridge line needs ws=wss://... (direct WebSocket) or url=https://<broker> (WebRTC)".into())
     }
 
     fn dial(&self) -> Dial<Carrier> {
@@ -72,6 +103,17 @@ impl CarrierConfig {
                     async move {
                         let ws = websocket::WebSocketStream::connect(&url).await?;
                         Ok(Box::pin(ws) as Carrier)
+                    }
+                    .boxed_local()
+                })
+            }
+            Self::WebRtc(config) => {
+                let config = Rc::new(config);
+                Rc::new(move || {
+                    let config = config.clone();
+                    async move {
+                        let dc = webrtc::WebRtcStream::dial(&config).await?;
+                        Ok(Box::pin(dc) as Carrier)
                     }
                     .boxed_local()
                 })
@@ -108,7 +150,7 @@ impl AsyncWrite for SnowflakeStream {
 }
 
 /// Build the full Snowflake stack over the configured carrier.
-async fn open(config: CarrierConfig) -> io::Result<Pin<Box<dyn Duplex>>> {
+async fn open(config: CarrierConfig) -> io::Result<Stack> {
     let mut client_id = [0u8; 8];
     let Ok(()) = tor_llcrypto::rng::CautiousRng.try_fill_bytes(&mut client_id);
     info!("Snowflake: opening session via {config:?}");
@@ -119,9 +161,14 @@ async fn open(config: CarrierConfig) -> io::Result<Pin<Box<dyn Duplex>>> {
     Ok(Box::pin(stream))
 }
 
+/// Open a session ahead of time and wait for it (see [`pool::warm`]).
+pub(crate) async fn warm(config: CarrierConfig) -> io::Result<()> {
+    pool::warm(&config).await
+}
+
 /// Open a byte stream to the Snowflake bridge. The returned future is `Send`
 /// (as arti's runtime traits require) for the same reason as [`SnowflakeStream`].
 pub(crate) async fn connect(config: CarrierConfig) -> io::Result<SnowflakeStream> {
-    let stream = SendFut(SendWrapper::new(open(config))).await?;
+    let stream = SendFut(SendWrapper::new(async move { pool::take(&config).await })).await?;
     Ok(SnowflakeStream(SendWrapper::new(stream)))
 }

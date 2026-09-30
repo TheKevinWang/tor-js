@@ -31,13 +31,14 @@
           <label for="carrier">Snowflake carrier</label>
           <select id="carrier">
             <option value="websocket">WebSocket straight to the Snowflake server (fast)</option>
+            <option value="webrtc">WebRTC through a volunteer proxy (standard Snowflake; slower to start)</option>
           </select>
         </div>
         <div class="field">
           <label><input type="checkbox" id="cold" /> Cold start: ignore the Tor directory cached from earlier visits</label>
         </div>
         <p class="notice">
-          The first visit downloads the Tor directory (a few MB) through the bridge, which takes about a minute; later visits reuse the copy cached in this browser.
+          The first visit downloads the Tor directory (a few MB) through the bridge, typically in under 10 seconds; later visits reuse the copy cached in this browser.
         </p>
         <div class="btn-row">
           <button class="btn" id="connect">Connect</button>

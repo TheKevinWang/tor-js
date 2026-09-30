@@ -362,6 +362,21 @@ describe('TorClient', () => {
       client.close()
     })
 
+    test("snowflake: 'webrtc' passes the WebRTC bridge lines", async () => {
+      const client = makeClient({ snowflake: 'webrtc' })
+      await client.ready()
+      assert.deepEqual(stub.options.at(-1).bridges, [...wasm.SNOWFLAKE_WEBRTC_BRIDGES])
+      assert.match(stub.options.at(-1).bridges[0], / url=https:\/\/snowflake-broker\.torproject\.net\/ ice=stun:/)
+      client.close()
+    })
+
+    test("snowflake: 'websocket' is the same as true", async () => {
+      const client = makeClient({ snowflake: 'websocket' })
+      await client.ready()
+      assert.deepEqual(stub.options.at(-1).bridges, [...wasm.SNOWFLAKE_BRIDGES])
+      client.close()
+    })
+
     test('explicit bridges are appended to the Snowflake ones', async () => {
       const client = makeClient({ snowflake: true, bridges: ['198.51.100.9:443 0123456789ABCDEF0123456789ABCDEF01234567'] })
       await client.ready()

@@ -55,8 +55,9 @@ $('clear-log').addEventListener('click', () => {
 });
 
 /** Snowflake bridge lines for the chosen carrier. */
-function bridgesFor(carrier, SNOWFLAKE_BRIDGES) {
-  if (carrier === 'websocket') return [...SNOWFLAKE_BRIDGES];
+function bridgesFor(carrier, lib) {
+  if (carrier === 'websocket') return [...lib.SNOWFLAKE_BRIDGES];
+  if (carrier === 'webrtc') return [...lib.SNOWFLAKE_WEBRTC_BRIDGES];
   throw new Error(`unknown carrier ${carrier}`);
 }
 
@@ -68,10 +69,10 @@ connectBtn.addEventListener('click', async () => {
 
   try {
     if (!TorLib) TorLib = await import('tor-js/wasm-base64');
-    const { TorClient, Log, SNOWFLAKE_BRIDGES, storage } = TorLib;
+    const { TorClient, Log, storage } = TorLib;
     const t0 = performance.now();
     client = new TorClient({
-      bridges: bridgesFor(carrierSel.value, SNOWFLAKE_BRIDGES),
+      bridges: bridgesFor(carrierSel.value, TorLib),
       log: new Log({ rawLog: (level, ...args) => log(level, args.join(' ')) }),
       logLevel: 'info',
       ...(coldBox.checked ? { storage: new storage.MemoryStorage() } : {}),

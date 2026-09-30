@@ -410,6 +410,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     // Bridges become the only guards. Lines naming a transport are split into
     // a plain bridge for arti and a route the runtime follows (bridges.rs).
     let mut pt_routes = HashMap::new();
+    let mut snowflakes = Vec::new();
     for line in &options.bridges {
         let config_err = |e: String| JsTorError::config(format!("Bad bridge line {:?}: {}", line, e)).into_js_value();
         let parsed = bridges::parse(line).map_err(config_err)?;
@@ -419,7 +420,9 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
 
         let Some(t) = parsed.transport else { continue };
         let route = if t.name == snowflake::TRANSPORT_NAME {
-            PtRoute::Snowflake(snowflake::CarrierConfig::from_settings(&t.settings).map_err(config_err)?)
+            let config = snowflake::CarrierConfig::from_settings(&t.settings).map_err(config_err)?;
+            snowflakes.push(config.clone());
+            PtRoute::Snowflake(config)
         } else if let Some(connect_pt) = &options.connect_pt {
             PtRoute::Js { transport: t.name, settings: t.settings, connect_pt: connect_pt.clone() }
         } else {
@@ -473,6 +476,25 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         .map_err(|e| JsTorError::internal(format!("Failed to create client: {}", e)).into_js_value())?;
 
     info!("TorClient created (unbootstrapped)");
+
+    // Have the Snowflake session ready before arti dials: its channel timeout
+    // (5s, handshake included) is shorter than a WebRTC broker match.
+    if !snowflakes.is_empty() {
+        use futures::future::{join_all, select, Either};
+        let started = web_time_compat::Instant::now();
+        info!("Snowflake: opening a session before bootstrap...");
+        let warm = std::pin::pin!(join_all(snowflakes.into_iter().map(snowflake::warm)));
+        let limit = std::pin::pin!(gloo_timers::future::TimeoutFuture::new(60_000));
+        match select(warm, limit).await {
+            Either::Left((results, _)) => {
+                for e in results.into_iter().filter_map(Result::err) {
+                    tracing::warn!("Snowflake: could not open a session ahead of bootstrap: {e}");
+                }
+                info!("Snowflake: ready after {:.1}s", started.elapsed().as_secs_f64());
+            }
+            Either::Right(_) => tracing::warn!("Snowflake: no session after 60s; bootstrapping anyway"),
+        }
+    }
 
     // 4. Bootstrap the client (connects to directory authorities via WS proxy)
     info!("Bootstrapping Tor client...");

@@ -47,10 +47,14 @@ export type TorClientOptions = {
 
   /**
    * Reach Tor through Tor Project's Snowflake service instead of a gateway.
-   * Works in browsers with no server of your own. Shorthand for
-   * `bridges: SNOWFLAKE_BRIDGES`; combined with `bridges`, both lists are used.
+   * Works in browsers with no server of your own. `true` or `'websocket'`
+   * connects straight to the Snowflake server (fast; also works in Node);
+   * `'webrtc'` goes through a volunteer proxy found by the Snowflake broker
+   * (the standard Snowflake path; needs `RTCPeerConnection`). Shorthand for
+   * `bridges: SNOWFLAKE_BRIDGES` / `SNOWFLAKE_WEBRTC_BRIDGES`; combined with
+   * `bridges`, both lists are used.
    */
-  snowflake?: boolean;
+  snowflake?: boolean | 'websocket' | 'webrtc';
 
   /**
    * Bridges to use as the only guards, in Tor `Bridge` line syntax without the
