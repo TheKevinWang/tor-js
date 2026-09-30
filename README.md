@@ -29,8 +29,9 @@ const client = new TorClient({
   // (A gateway's KPS address, "ip:port:certhash" — printed by
   // the gateway at startup. In NodeJS you can leave this
   // commented, but browsers don't have raw TCP and so require
-  // help to connect to the tor network. See the Gateway
-  // section below.)
+  // help to connect to the tor network: a gateway, or
+  // `snowflake: true` to use Tor's Snowflake bridge with no
+  // server of your own. See Gateway and Snowflake below.)
 });
 
 const response = await client.fetch('https://check.torproject.org/api/ip');
@@ -45,9 +46,9 @@ The package offers three ways to load the WASM binary. All export the same API.
 
 | Import | WASM loading | Size (gzip) | Best for |
 |---|---|---|---|
-| `tor-js` | Fetched from CDN, cached locally | 32 kB | Production web apps |
-| `tor-js/wasm-base64` | Embedded in the JS bundle | 2.5 MB | Single-file deploys |
-| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 31 kB + 1.9 MB | Self-hosted, server-side |
+| `tor-js` | Fetched from CDN, cached locally | 35 kB | Production web apps |
+| `tor-js/wasm-base64` | Embedded in the JS bundle | 2.7 MB | Single-file deploys |
+| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 34 kB + 2.0 MB | Self-hosted, server-side |
 
 Each also has a `/singleton` variant (see [Singleton](#singleton) below).
 
@@ -64,6 +65,9 @@ type TorClientOptions = {
   storage?: TorStorage;                // Persistent storage (default: auto-detected)
   logLevel?: LogLevel;                 // 'trace' | 'debug' | 'info' | 'warn' | 'error'
   socketProvider?: ArtiSocketProvider; // Custom transport (overrides `gateway`)
+  snowflake?: boolean | 'websocket' | 'webrtc'; // Reach Tor via Snowflake, no gateway (see below)
+  bridges?: string[];                  // Bridge lines to use as the only guards
+  bootstrapUrl?: string;               // Directory snapshot (bootstrap.zip.zst) to start from
 };
 ```
 
@@ -146,6 +150,57 @@ Browsers can't open raw TCP sockets, so to reach Tor relays from a browser you c
 The client dials the gateway by its **KPS address**, `ip:port:certhash` (printed by the gateway at startup), over [KPS](https://ethereum.github.io/kps/) — WebRTC in browsers, QUIC in Node.js. Each Tor relay connection is an HTTP `CONNECT` tunnel on its own KPS stream; fast bootstrap is a zstd-compressed directory snapshot fetched over the same connection. The full wire protocol is specified in [PROTOCOL.md](PROTOCOL.md).
 
 The gateway lives in this repo at [`crates/tor-js-gateway/`](crates/tor-js-gateway/) — see [its README](crates/tor-js-gateway/README.md) to build and run your own. The [live demo](https://ethereum.github.io/tor-js/demo.html) uses a public gateway that is for demonstration only (limited capacity, may disappear at any time); host your own for anything real.
+
+## Snowflake (no gateway)
+
+A page can also reach Tor with no gateway at all, through Tor Project's
+[Snowflake](https://snowflake.torproject.org/) bridge. A static site (GitHub
+Pages, say) is then all you need — including for `.onion` services:
+
+```javascript
+const client = new TorClient({ snowflake: true });
+const res = await client.fetch('http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/');
+// 301 to the https:// onion — tor-js's fetch does not follow redirects.
+```
+
+The Snowflake transport (Turbo Tunnel framing, KCP, smux) runs inside the WASM
+module, and arti uses the Snowflake bridge as its only guard, verifying its
+fingerprint in the Tor handshake. Two carriers:
+
+- `snowflake: true` (or `'websocket'`): a WebSocket straight to the Snowflake
+  server. Fast (a cold start is typically under 10s) and works in Node too. The
+  Snowflake server sees your IP address, as any Tor guard does.
+- `snowflake: 'webrtc'`: the standard Snowflake path — the Snowflake broker
+  matches you with a volunteer proxy, reached over WebRTC. Harder to block;
+  slower and more variable to start (broker retries, NAT), and needs
+  `RTCPeerConnection` (a window).
+
+WebTunnel bridges cannot be used from a page: their server answers the HTTP
+upgrade without `Sec-WebSocket-Accept` and then carries raw bytes, which the
+browser `WebSocket` API rejects.
+
+A first visit downloads the Tor directory through the bridge. To skip that,
+host a snapshot next to the page and pass `bootstrapUrl` — tor-js verifies it
+like any directory document, so the host need not be trusted:
+
+```
+node scripts/make-bootstrap.mjs site/bootstrap.zip.zst   # from the directory authorities
+```
+
+```javascript
+new TorClient({ snowflake: true, bootstrapUrl: new URL('bootstrap.zip.zst', location.href).href });
+```
+
+Regenerate it regularly (the consensus in it is valid for 3 hours; an older
+snapshot still saves the microdescriptor download). See
+[`website/onion.html`](website/onion.html) for a complete page and
+[`examples/tor-fetch-onion-snowflake.js`](examples/tor-fetch-onion-snowflake.js)
+for Node.
+
+`bridges` takes Tor bridge lines directly (without the `Bridge` keyword):
+`snowflake` lines use the built-in transport (`ws=` for the WebSocket carrier,
+or `url=`/`ice=`/`fingerprint=` for WebRTC), and plain `ip:port fingerprint`
+lines are dialed like relays.
 
 ## Singleton
 

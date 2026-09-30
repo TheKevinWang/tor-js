@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB,
+`tor-js/wasm-file` 1.9 → 2.0 MB) for bridge support and the Snowflake transport.
+
+### Added
+
+- **Snowflake: no gateway needed.** `new TorClient({ snowflake: true })` reaches
+  Tor through Tor Project's Snowflake bridge, so a page on a static host can use
+  tor-js — `.onion` services included — with no gateway. The transport (Turbo
+  Tunnel, KCP, smux; ported from andrewtheguy/webtor-rs, MIT) runs in the WASM
+  module. `snowflake: 'webrtc'` uses a volunteer proxy found by the Snowflake
+  broker instead of a direct WebSocket to the Snowflake server.
+- **`bridges`.** Tor bridge lines to use as the only guards: `snowflake` lines
+  use the built-in transport, plain `ip:port fingerprint` lines are dialed like
+  relays. Only arti's `bridge-client` feature is enabled — not `pt-client`,
+  whose PT manager spawns binaries; transports are dialed by the WASM runtime.
+- **`bootstrapUrl`.** Pre-fill an empty directory cache from a snapshot fetched
+  with plain `fetch()`, e.g. one hosted next to the page.
+  `scripts/make-bootstrap.mjs` builds one from the directory authorities.
+- **`website/onion.html`.** A demo page that fetches DuckDuckGo's onion service
+  over Snowflake, and `examples/tor-fetch-onion-snowflake.js` for Node.
+
 ## 0.4.2
 
 No API breaks. One behaviour change to be aware of: setting `logLevel` without a
