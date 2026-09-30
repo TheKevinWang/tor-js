@@ -77,6 +77,13 @@ export type TorClientOptions = {
 
 export type { TorStorage } from '#wasm';
 
+/**
+ * The `Response` from `TorClient.fetch()`. `rawHeaders` lists every response
+ * header exactly as received (name lower-cased, repeats kept), including ones a
+ * `Response` never exposes to script, chiefly `Set-Cookie`.
+ */
+export type TorResponse = Response & { rawHeaders?: [string, string][] };
+
 export interface FetchInit {
   method?: string;
   headers?: Record<string, string>;

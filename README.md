@@ -202,6 +202,94 @@ for Node.
 or `url=`/`ice=`/`fingerprint=` for WebRTC), and plain `ip:port fingerprint`
 lines are dialed like relays.
 
+## Static sites with an onion backend
+
+Snowflake lets a static page reach Tor; the **site adapter** lets an existing
+site do it without being rewritten. Add a Service Worker and a manifest that
+says which paths are public files (still served by the static host) and which
+belong to a backend that is only reachable as an onion service. The site keeps
+using ordinary URLs (`fetch('/api/messages')`, `<form action="/login"
+method="POST">`, `<a href="/profile">`); the browser still does the HTML, CSS
+and JavaScript; only the requests the manifest routes to Tor travel over Tor.
+
+```
+your-site/
+  index.html, app.js, style.css, ...     # unchanged
+  tor-site.json                          # the manifest (below)
+  tor-site-sw.js  tor-site-host.js  tor-site.js   # from node_modules/tor-js/dist/site/
+  tor_js_bg.wasm                         # from node_modules/tor-js/dist/
+```
+
+```html
+<script src="tor-site.js" data-sw="tor-site-sw.js" data-manifest="tor-site.json"></script>
+```
+
+```json
+{
+  "version": 1,
+  "onion": "https://abc...xyz.onion",
+  "tor": ["/api/**", "/login", "/logout", "/account/**"],
+  "static": ["/api/docs.json"],
+  "client": { "snowflake": true, "wasmUrl": "tor_js_bg.wasm", "bootstrapUrl": "bootstrap.zip.zst" }
+}
+```
+
+`static` patterns are checked first, then `tor` patterns; a path that matches
+neither is static. `*` matches within a path segment and `**` across segments
+(`/api/**` also matches `/api`). Patterns are relative to the Service Worker's
+scope, so a project page at `https://user.github.io/repo/` writes `/api/**` for
+`/repo/api/...`. A `tor` entry can also be `{ "match": "/duck/**", "strip":
+"/duck", "onion": "https://other.onion" }` to mount a backend under a prefix or
+use a different onion service for some paths. Use the onion's `https://` origin
+if it redirects `http` to `https` (many do). Manifest errors name the field.
+
+Pages that call a Tor path on their very first visit should wait for the worker
+to take control, which happens once per browser: `const site = await
+window.torSite;` (or `registerTorSite()` from `tor-js/site`). `site.ready()`
+resolves when Tor is connected and `site.onStatus(cb)` reports
+`bootstrapping`/`ready`/`error`, so a page can show progress. Set
+`localStorage['tor-site-debug'] = '1'` to print the Tor client's log to the
+page console. See [`website/public/site-demo/`](website/public/site-demo/) for
+a complete site (`node scripts/stage-site-demo.mjs` after a build, then serve
+that directory with any static file server).
+
+What the adapter does for you:
+
+- **Routing fails closed.** A request the manifest sends to Tor is only ever
+  answered from Tor; if Tor is down the page gets a `502` saying so, never a
+  fetch over the clear web. Only the hosts named in the manifest are ever
+  contacted, and only `.onion` names are accepted.
+- **Cookies.** `Set-Cookie` is a forbidden response header for page scripts, and
+  a browser would file it under the wrong site, so the adapter keeps its own jar
+  (`Path`, `Domain`, `Expires`/`Max-Age`, `Secure`, `HttpOnly`), persisted in
+  IndexedDB, and never sends the site's own cookies to the backend. The jar
+  cannot be read through `document.cookie`.
+- **Redirects** are handed back to the browser with `Location` rewritten to the
+  site's own URL, so the address bar and every hop go through the same routing.
+- **Headers.** `Origin`/`Referer` name the onion (so CSRF checks pass), `Accept-
+  Encoding: gzip` is decoded, and headers that would act on the *static* site
+  (`Strict-Transport-Security`, `Clear-Site-Data`, `Alt-Svc`) are dropped. Every
+  visitor sends the same Tor Browser-style `User-Agent` rather than the real
+  browser's.
+- **Tor lives in a persistent worker** (a SharedWorker, one per site, shared by
+  all tabs; a dedicated Worker where SharedWorker does not exist), not in the
+  Service Worker, which browsers stop after ~30 s of idleness. The Service
+  Worker only routes. If no page of the site is open (someone types a Tor path
+  into a new tab) it runs Tor itself for that request. `"client": { "host":
+  "service-worker" }` forces that mode.
+
+Limits, all inherited from what a Service Worker can see: WebSockets and
+server-sent events to the backend are not supported; absolute URLs the
+backend writes into its HTML (`http://abc.onion/x`) are not rewritten, so serve
+relative URLs (or mount the backend at the site root); a document the onion
+serves brings the onion's own `Content-Security-Policy` with it; only
+`fetch`-style requests, navigations and form posts under the Service Worker's
+scope are seen (cross-origin iframes and third-party pages are not); uploads are
+buffered in memory; the WebRTC Snowflake carrier is unavailable because workers
+have no `RTCPeerConnection`. The onion address is public in the manifest: it is a
+routing table, not a secret. Anyone who can run script on the static origin can
+use the adapter to reach the backend, exactly as they could use its cookies.
+
 ## Singleton
 
 For simple use cases, import the singleton wrapper:

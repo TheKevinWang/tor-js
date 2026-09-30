@@ -13,6 +13,8 @@ export default defineConfig({
     'entryPoints/wasm-base64/singleton': 'src/entryPoints/wasm-base64/singleton.ts',
     'entryPoints/wasm-file/index': 'src/entryPoints/wasm-file/index.ts',
     'entryPoints/wasm-file/singleton': 'src/entryPoints/wasm-file/singleton.ts',
+    // Page-side API of the static-site adapter; its worker scripts are built by build.mjs.
+    'site/register': 'src/site/register.ts',
   },
   format: ['esm'],
   dts: true,

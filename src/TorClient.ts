@@ -5,7 +5,7 @@ import {
   addLogListener,
   setListenerLevel,
 } from './wasm.js';
-import type { TorClientOptions, FetchInit, LogLevel } from './types.js';
+import type { TorClientOptions, FetchInit, LogLevel, TorResponse } from './types.js';
 import { Log, levelEnabled } from './Log.js';
 import { createAutoStorage } from './storage/index.js';
 import { ArtiSocketProvider } from './socketProvider.js';
@@ -140,12 +140,12 @@ export class TorClient {
    * Make an HTTP fetch request through Tor.
    * Returns a standard browser Response object.
    */
-  async fetch(url: string, init?: FetchInit): Promise<Response> {
+  async fetch(url: string, init?: FetchInit): Promise<TorResponse> {
     if (this.closed) throw new Error('TorClient is closed');
     const client = await this.clientPromise;
     await this.ready();
     this.log.info(`Fetching ${url}`);
-    return client.fetch(url, init);
+    return client.fetch(url, init) as Promise<TorResponse>;
   }
 
   /**

@@ -137,6 +137,11 @@ jobs:
       # than the consensus lifetime (3h) still saves the microdescriptors.
       - name: Directory snapshot for the Snowflake demo
         run: node scripts/make-bootstrap.mjs website/public/bootstrap.zip.zst || echo "snapshot skipped"
+      # site-demo/ is a plain static site whose /duck/ paths are served by an
+      # onion service through the site adapter's Service Worker; it needs the
+      # built worker scripts and WASM next to it.
+      - name: Stage the static-site demo
+        run: node scripts/stage-site-demo.mjs
       - name: Build website
         working-directory: website
         run: |

@@ -7,6 +7,18 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **Static-site adapter (`tor-js/site`).** A Service Worker plus a
+  `tor-site.json` manifest route an existing site's backend paths over Tor to an
+  onion service while everything else stays on the static host, with no change
+  to the site's own code: cookie jar, redirect and header rewriting, gzip, a
+  persistent SharedWorker that owns the Tor client, and a page API
+  (`registerTorSite()` / `window.torSite`) reporting connection state. Built to
+  `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
+  `website/public/site-demo/`. See the README section "Static sites with an
+  onion backend".
+- **`response.rawHeaders`.** `TorClient.fetch()` responses now carry the header
+  list exactly as received (`[name, value][]`, repeats kept) because the
+  `Response` constructor drops `Set-Cookie`.
 - **Snowflake: no gateway needed.** `new TorClient({ snowflake: true })` reaches
   Tor through Tor Project's Snowflake bridge, so a page on a static host can use
   tor-js — `.onion` services included — with no gateway. The transport (Turbo

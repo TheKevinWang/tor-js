@@ -214,6 +214,8 @@ function verifyDeclarationMaps() {
   const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
   const errors = [];
   for (const [exportPath, conditions] of Object.entries(pkg.exports)) {
+    // Plain file exports (worker scripts, the WASM) have no declarations.
+    if (typeof conditions === 'string') continue;
     const dtsPath = resolve(__dirname, conditions.types);
     const dts = readFileSync(dtsPath, 'utf-8');
     if (!dts.includes('//# sourceMappingURL=')) {

@@ -37,7 +37,15 @@
     "./wasm-base64/singleton": {
       "types": "./dist/entryPoints/wasm-base64/singleton.d.ts",
       "import": "./dist/entryPoints/wasm-base64/singleton.js"
-    }
+    },
+    "./site": {
+      "types": "./dist/site/register.d.ts",
+      "import": "./dist/site/register.js"
+    },
+    "./site/tor-site-sw.js": "./dist/site/tor-site-sw.js",
+    "./site/tor-site-host.js": "./dist/site/tor-site-host.js",
+    "./site/tor-site.js": "./dist/site/tor-site.js",
+    "./tor_js_bg.wasm": "./dist/tor_js_bg.wasm"
   },
   "imports": {
     "#wasm": "./dist/wasm-pkg/tor_js.js",

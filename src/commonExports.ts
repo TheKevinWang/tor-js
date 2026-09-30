@@ -1,6 +1,6 @@
 // Common exports shared by all entry points.
 
-export type { TorClientOptions, FetchInit, TorStorage } from './types.js';
+export type { TorClientOptions, FetchInit, TorResponse, TorStorage } from './types.js';
 export { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from './snowflake.js';
 export { Log, type LogLevel } from './Log.js';
 export * as storage from './storage/index.js';
