@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>html{background:#0c0a12;color:#ece9f6}</style>
+  <title>Onion, no gateway — tor-js</title>
+  <meta name="description" content="Reach a Tor onion service from a static web page: tor-js connects over Snowflake, with no gateway." />
+  <link rel="icon" href="/onion.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="tools-page">
+    <div class="page-head">
+      <h1>Onion services, no gateway</h1>
+      <p>This page runs a full Tor client (Arti, compiled to WebAssembly) and reaches the Tor network through Tor Project's <a href="https://snowflake.torproject.org/" target="_blank" rel="noopener">Snowflake</a> bridge. No tor-js gateway and no server of this site's own is involved: the static page is all there is.</p>
+    </div>
+
+    <div class="demo-steps">
+      <!-- 1. Connect -->
+      <section class="card demo-step" id="step-connect">
+        <div class="step-head">
+          <span class="step-badge">1</span>
+          <h2>Connect over Snowflake</h2>
+          <span class="dot" id="dot"></span>
+          <span class="step-status" id="status">Not connected</span>
+        </div>
+        <div class="field">
+          <label for="carrier">Snowflake carrier</label>
+          <select id="carrier">
+            <option value="websocket">WebSocket straight to the Snowflake server (fast)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="cold" /> Cold start: ignore the Tor directory cached from earlier visits</label>
+        </div>
+        <p class="notice">
+          The first visit downloads the Tor directory (a few MB) through the bridge, which takes about a minute; later visits reuse the copy cached in this browser.
+        </p>
+        <div class="btn-row">
+          <button class="btn" id="connect">Connect</button>
+          <button class="btn secondary" id="disconnect" disabled>Disconnect</button>
+        </div>
+      </section>
+
+      <!-- 2. Request -->
+      <section class="card demo-step locked" id="step-request">
+        <div class="step-head">
+          <span class="step-badge">2</span>
+          <h2>Request</h2>
+        </div>
+        <div class="field">
+          <label for="url">URL</label>
+          <input type="url" id="url" class="mono" spellcheck="false"
+            value="http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/" />
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="follow" checked /> Follow redirects</label>
+        </div>
+        <button class="btn" id="fetch">Send request →</button>
+      </section>
+
+      <!-- 3. Response -->
+      <section class="card demo-step locked" id="step-response">
+        <div class="step-head">
+          <span class="step-badge">3</span>
+          <h2>Response</h2>
+        </div>
+        <div id="hops" class="notice mono"></div>
+        <div id="response" class="response empty">No request yet.</div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Log drawer, collapsed by default -->
+  <div class="log-drawer" id="log-drawer">
+    <div class="log-bar">
+      <button class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="log">
+        <span class="log-chevron">▾</span>
+        <span class="log-bar-title">Log</span>
+        <span class="log-latest" id="log-latest">Idle — connect to begin</span>
+        <span class="log-count" id="log-count">0</span>
+      </button>
+      <button class="btn ghost sm" id="clear-log">Clear</button>
+    </div>
+    <div class="log-body"><div id="log" class="console"></div></div>
+  </div>
+
+  <script type="module" src="/src/pages/onion.js"></script>
+</body>
+</html>

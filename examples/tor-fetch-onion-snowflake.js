@@ -58,7 +58,7 @@ async function main() {
 
   client.close();
   console.log(`status ${response.status}`);
-  console.log(`title: ${(body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '(none)'}`);
+  console.log(`title: ${(body.match(/<title[^>]*>([^<]*)<\/title>/i) ?? [])[1] ?? '(none)'}`);
   console.log(`body: ${body.length} bytes; contains "DuckDuckGo": ${body.includes('DuckDuckGo')}`);
   process.exit(response.status === 200 ? 0 : 1);
 }
