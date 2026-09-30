@@ -711,6 +711,17 @@ async fn fetch_impl(
     )
     .map_err(|e| JsTorError::internal(format!("Failed to create Response: {:?}", e)).into_js_value())?;
 
+    // The Response constructor silently drops forbidden response headers such
+    // as Set-Cookie, so a caller that keeps its own cookie jar (the site
+    // adapter in src/site/) could never see them. Hand over the header list
+    // exactly as parsed: name/value pairs in wire order, repeats kept.
+    let raw_headers = js_sys::Array::new();
+    for (key, value) in &result.headers {
+        let pair = js_sys::Array::of2(&JsValue::from_str(key), &JsValue::from_str(value));
+        raw_headers.push(&pair);
+    }
+    let _ = js_sys::Reflect::set(&response, &JsValue::from_str("rawHeaders"), &raw_headers);
+
     Ok(response.into())
 }
 
