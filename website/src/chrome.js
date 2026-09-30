@@ -23,6 +23,7 @@ const LINKS = [
   { href: 'index.html', label: 'Home', key: 'index' },
   { href: 'demo.html', label: 'Demo', key: 'demo' },
   { href: 'onion.html', label: 'Onion (no gateway)', key: 'onion' },
+  { href: 'observatory.html', label: 'Observatory', key: 'observatory' },
   { href: 'connect.html', label: 'Relay tester', key: 'connect' },
   { href: 'bootstrap.html', label: 'Bootstrap', key: 'bootstrap' },
 ];

@@ -631,8 +631,12 @@ async fn fetch_impl(
     let js_headers = web_sys::Headers::new()
         .map_err(|e| JsTorError::internal(format!("Failed to create Headers: {:?}", e)).into_js_value())?;
     for (key, value) in &result.headers {
-        js_headers.append(key, value)
-            .map_err(|e| JsTorError::internal(format!("Failed to set header {}: {:?}", key, e)).into_js_value())?;
+        // `Headers` rejects values that are not ByteStrings (e.g. a stray
+        // non-Latin-1 character some servers send). One odd header must not
+        // lose the whole response, so skip it — as browsers do.
+        if let Err(e) = js_headers.append(key, value) {
+            tracing::warn!("Dropping response header {:?} the Headers API rejects: {:?}", key, e);
+        }
     }
 
     // Convert BodyReader → futures::Stream → JS ReadableStream

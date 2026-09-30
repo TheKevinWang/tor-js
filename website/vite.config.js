@@ -20,6 +20,7 @@ export default defineConfig({
         connect: resolve(root, 'connect.html'),
         bootstrap: resolve(root, 'bootstrap.html'),
         onion: resolve(root, 'onion.html'),
+        observatory: resolve(root, 'observatory.html'),
       },
     },
   },

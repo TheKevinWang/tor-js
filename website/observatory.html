@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>html{background:#0c0a12;color:#ece9f6}</style>
+  <title>Onion Observatory — tor-js</title>
+  <meta name="description" content="A static page that runs a Tor client, reaches the network over Snowflake, and loads onion services live — no server." />
+  <link rel="icon" href="/onion.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    .obs { max-width: var(--maxw); margin: 0 auto; padding: 32px 20px 120px; }
+    .obs h1 { font-size: clamp(30px, 5vw, 46px); letter-spacing: -0.03em; margin: 0 0 8px; }
+    .obs h1 span { background: var(--grad-text); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .obs .lede { color: var(--text-dim); max-width: 720px; margin: 0 0 22px; line-height: 1.55; }
+    .obs h2 { font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: var(--text-dim); margin: 0 0 12px; font-weight: 600; }
+
+    /* The path: tab → Snowflake → bridge → Tor → onion */
+    .path { display: flex; align-items: center; gap: 0; margin: 8px 0 22px; overflow-x: auto; padding: 6px 2px; }
+    .node { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 92px; }
+    .node .dotc { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-size: 20px;
+      border: 1.5px solid var(--border-strong); background: var(--surface); transition: all .4s var(--ease); }
+    .node .lbl { font-size: 12px; color: var(--text-muted); text-align: center; transition: color .4s; }
+    .node .sub { font: 500 11px var(--mono); color: var(--text-muted); min-height: 14px; }
+    .node.on .dotc { border-color: var(--violet); box-shadow: var(--glow); background: rgba(157,123,255,.12); }
+    .node.on .lbl { color: var(--text); }
+    .node.busy .dotc { animation: pulse 1.1s ease-in-out infinite; border-color: var(--violet-bright); }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(157,123,255,.12); } }
+    .wire { flex: 1 1 40px; min-width: 30px; height: 2px; background: var(--border); position: relative; overflow: hidden; margin-bottom: 36px; }
+    .wire.on { background: rgba(157,123,255,.35); }
+    .wire.on::after { content: ''; position: absolute; top: -2px; width: 18px; height: 6px; border-radius: 3px;
+      background: var(--grad-brand); animation: flow 1.2s linear infinite; }
+    @keyframes flow { from { left: -20px; } to { left: 100%; } }
+
+    .launch { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 26px; }
+    .launch .btn { font-size: 16px; padding: 13px 26px; }
+    .launch .clock { font: 600 14px var(--mono); color: var(--text-dim); }
+
+    .grid2 { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+    .panel + .panel { margin-top: 18px; }
+
+    /* Waterfall */
+    .wf-axis { display: flex; justify-content: space-between; font: 500 10px var(--mono); color: var(--text-muted); margin: 0 0 6px 170px; }
+    .wf-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); }
+    .wf-name { display: flex; flex-direction: column; min-width: 0; }
+    .wf-name b { font-size: 13.5px; font-weight: 600; }
+    .wf-name code { font: 11px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wf-track { position: relative; height: 22px; }
+    .wf-seg { position: absolute; top: 5px; height: 12px; border-radius: 4px; transition: width .15s linear; }
+    .wf-seg.connect { background: rgba(157,123,255,.55); }
+    .wf-seg.body { background: var(--pink); }
+    .wf-seg.pending { background: repeating-linear-gradient(45deg, rgba(157,123,255,.55) 0 6px, rgba(157,123,255,.25) 6px 12px); }
+    .wf-seg.fail { background: rgba(255,107,125,.55); }
+    .wf-meta { grid-column: 2; font: 500 11.5px var(--mono); color: var(--text-dim); margin-top: -6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wf-meta .good { color: var(--ok); }
+    .wf-meta .bad { color: var(--err); }
+    .wf-meta .ttl { font-family: var(--sans); color: var(--text-muted); }
+    .legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-muted); margin-top: 10px; flex-wrap: wrap; }
+    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+    /* Exit card */
+    .exit { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .exit .ip { font: 700 26px var(--mono); letter-spacing: -0.02em; }
+    .exit .badge { font: 600 11px var(--mono); padding: 3px 8px; border-radius: 99px; background: rgba(110,231,168,.12); color: var(--ok); border: 1px solid rgba(110,231,168,.35); }
+    .exit-note { color: var(--text-muted); font-size: 12.5px; margin-top: 6px; }
+
+    /* Search */
+    .search { display: flex; gap: 8px; }
+    .search input { flex: 1; min-width: 0; }
+    .results { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .res { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; transition: border-color .2s, background .2s; }
+    .res:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    .res b { display: block; font-size: 14px; color: var(--violet-bright); margin-bottom: 2px; }
+    .res code { font: 11px var(--mono); color: var(--teal); word-break: break-all; }
+    .res p { margin: 4px 0 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
+    .muted { color: var(--text-muted); font-size: 12.5px; }
+    #viewer-panel { margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <main class="obs">
+    <h1>Onion <span>Observatory</span></h1>
+    <p class="lede">This page is plain static files. When you press launch, it starts a full Tor client (Arti, in WebAssembly) inside this tab, reaches the Tor network through Tor Project's Snowflake bridge, and loads a handful of onion services side by side — no gateway, no server of ours, nothing to install.</p>
+
+    <div class="path" id="path">
+      <div class="node" id="n-tab"><div class="dotc">🗔</div><div class="lbl">This tab</div><div class="sub" id="s-tab"></div></div>
+      <div class="wire" id="w1"></div>
+      <div class="node" id="n-sf"><div class="dotc">❄</div><div class="lbl">Snowflake</div><div class="sub" id="s-sf"></div></div>
+      <div class="wire" id="w2"></div>
+      <div class="node" id="n-dir"><div class="dotc">🗺</div><div class="lbl">Tor directory</div><div class="sub" id="s-dir"></div></div>
+      <div class="wire" id="w3"></div>
+      <div class="node" id="n-tor"><div class="dotc">🧅</div><div class="lbl">Tor network</div><div class="sub" id="s-tor"></div></div>
+      <div class="wire" id="w4"></div>
+      <div class="node" id="n-onion"><div class="dotc">✦</div><div class="lbl">Onion services</div><div class="sub" id="s-onion"></div></div>
+    </div>
+
+    <div class="launch">
+      <button class="btn" id="launch">Launch Tor in this tab</button>
+      <span class="clock" id="clock"></span>
+    </div>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Onion services, loaded in parallel</h2>
+        <div class="wf-axis" id="axis"></div>
+        <div id="wf"></div>
+        <div class="legend">
+          <span><i style="background:rgba(157,123,255,.55)"></i>descriptor lookup + rendezvous (+ TLS)</span>
+          <span><i style="background:var(--pink)"></i>page transfer</span>
+          <span>All over one Snowflake bridge</span>
+        </div>
+      </section>
+
+      <div>
+        <section class="panel">
+          <h2>How websites see you</h2>
+          <div class="exit" id="exit"><span class="muted">Waiting for Tor…</span></div>
+          <div class="exit-note" id="exit-note">Checked with check.torproject.org, through a Tor exit relay.</div>
+        </section>
+
+        <section class="panel">
+          <h2>Search, via DuckDuckGo's onion</h2>
+          <form class="search" id="search-form">
+            <input id="q" class="mono" placeholder="search the web through Tor…" disabled value="snowflake pluggable transport" />
+            <button class="btn" id="go" disabled>Search</button>
+          </form>
+          <div class="results" id="results"><span class="muted">The query and results travel only inside Tor, to duckduckgogg42…onion. Click a result to open it through a Tor exit.</span></div>
+        </section>
+      </div>
+    </div>
+
+    <section class="panel" id="viewer-panel" hidden>
+      <h2 id="viewer-title">Opened through Tor</h2>
+      <div id="viewer" class="response empty"></div>
+    </section>
+  </main>
+
+  <!-- Log drawer, collapsed by default -->
+  <div class="log-drawer" id="log-drawer">
+    <div class="log-bar">
+      <button class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="log">
+        <span class="log-chevron">▾</span>
+        <span class="log-bar-title">Arti log</span>
+        <span class="log-latest" id="log-latest">Idle</span>
+        <span class="log-count" id="log-count">0</span>
+      </button>
+      <button class="btn ghost sm" id="clear-log">Clear</button>
+    </div>
+    <div class="log-body"><div id="log" class="console"></div></div>
+  </div>
+
+  <script type="module" src="/src/pages/observatory.js"></script>
+</body>
+</html>
