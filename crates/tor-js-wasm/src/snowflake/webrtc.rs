@@ -32,6 +32,9 @@ use web_sys::{
 };
 use web_time_compat::Instant;
 
+use super::Carrier;
+use crate::runtime::JsProxyStream;
+
 const DATA_CHANNEL_LABEL: &str = "snowflake";
 const ICE_GATHERING_TIMEOUT_MS: u32 = 10_000;
 const DATA_CHANNEL_TIMEOUT_MS: u32 = 10_000;
@@ -63,6 +66,19 @@ thread_local! {
     /// claims "unrestricted" (sparing the scarce open proxies) until that
     /// fails, and "unknown" from then on.
     static UNRESTRICTED_FAILED: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
+    /// A JavaScript function returning a Promise of a "peer" (see
+    /// [`connect_remote`]). Set where `RTCPeerConnection` does not exist (a
+    /// worker) but a page can host the peer connection for us.
+    static PEER_FACTORY: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+}
+
+/// Use `factory` to create the WebRTC peer connection instead of the global
+/// `RTCPeerConnection` (see [`connect_remote`] for the contract).
+pub(crate) fn set_peer_factory(factory: js_sys::Function) {
+    PEER_FACTORY.with(|f| *f.borrow_mut() = Some(factory));
 }
 
 fn nat_type() -> &'static str {
@@ -299,28 +315,150 @@ impl WebRtcStream {
         Ok(stream)
     }
 
-    /// Dial a proxy, retrying as the official client does.
-    pub(crate) async fn dial(config: &WebRtcConfig) -> io::Result<Self> {
-        let mut last = None;
-        for attempt in 1..=MAX_ATTEMPTS {
-            let started = Instant::now();
-            match Self::connect(config).await {
-                Ok(s) => return Ok(s),
-                Err(e) => {
-                    warn!("Snowflake WebRTC attempt {attempt}/{MAX_ATTEMPTS} failed: {e}");
-                    if e.to_string().contains("not available here") {
-                        return Err(e);
-                    }
-                    last = Some(e);
-                    let wait = ATTEMPT_INTERVAL.saturating_sub(started.elapsed());
-                    if attempt < MAX_ATTEMPTS && !wait.is_zero() {
-                        TimeoutFuture::new(wait.as_millis() as u32).await;
-                    }
+}
+
+/// One attempt: through the JS peer factory if one is set, else natively.
+async fn attempt(config: &WebRtcConfig) -> io::Result<Carrier> {
+    let factory = PEER_FACTORY.with(|f| f.borrow().clone());
+    match factory {
+        Some(factory) => connect_remote(config, &factory).await,
+        None => Ok(Box::pin(WebRtcStream::connect(config).await?) as Carrier),
+    }
+}
+
+/// Dial a proxy, retrying as the official client does.
+pub(crate) async fn dial(config: &WebRtcConfig) -> io::Result<Carrier> {
+    let mut last = None;
+    for attempt_no in 1..=MAX_ATTEMPTS {
+        let started = Instant::now();
+        match attempt(config).await {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                warn!("Snowflake WebRTC attempt {attempt_no}/{MAX_ATTEMPTS} failed: {e}");
+                if e.to_string().contains("not available here") {
+                    return Err(e);
+                }
+                last = Some(e);
+                let wait = ATTEMPT_INTERVAL.saturating_sub(started.elapsed());
+                if attempt_no < MAX_ATTEMPTS && !wait.is_zero() {
+                    TimeoutFuture::new(wait.as_millis() as u32).await;
                 }
             }
         }
-        Err(last.unwrap_or_else(|| net_err("Snowflake WebRTC failed")))
     }
+    Err(last.unwrap_or_else(|| net_err("Snowflake WebRTC failed")))
+}
+
+// --------------------------------------------------------------------------
+// Remote peer: the peer connection lives in a page
+// --------------------------------------------------------------------------
+
+fn js_msg(e: &JsValue) -> String {
+    if let Some(err) = e.dyn_ref::<js_sys::Error>() {
+        String::from(err.message())
+    } else if let Some(s) = e.as_string() {
+        s
+    } else {
+        format!("{e:?}")
+    }
+}
+
+/// Call `this[method](...args)` and await its result (a Promise or a value).
+async fn call_js(this: &JsValue, method: &str, args: &Array) -> io::Result<JsValue> {
+    let f: js_sys::Function = Reflect::get(this, &method.into())
+        .ok()
+        .and_then(|f| f.dyn_into().ok())
+        .ok_or_else(|| net_err(format!("WebRTC peer has no {method}()")))?;
+    let returned = f.apply(this, args).map_err(|e| net_err(js_msg(&e)))?;
+    JsFuture::from(js_sys::Promise::resolve(&returned)).await.map_err(|e| net_err(js_msg(&e)))
+}
+
+/// Closes the JS peer when dropped.
+struct RemotePeer(JsValue);
+
+impl Drop for RemotePeer {
+    fn drop(&mut self) {
+        if let Ok(close) = Reflect::get(&self.0, &"close".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) {
+            let _ = close.call0(&self.0);
+        }
+    }
+}
+
+/// A data channel living in a page, reached through a JS socket object.
+struct RemoteStream {
+    stream: JsProxyStream,
+    _peer: RemotePeer,
+}
+
+impl AsyncRead for RemoteStream {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for RemoteStream {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_close(cx)
+    }
+}
+
+/// One attempt with the peer connection hosted by JavaScript (typically in a
+/// page, because workers have no `RTCPeerConnection`). The broker exchange and
+/// everything above the data channel stay here; the factory's peer does only
+/// what needs the browser object:
+///
+/// - `factory() -> Promise<peer>`
+/// - `peer.offer(stunUrls: string[]) -> Promise<string>`: create the peer
+///   connection and data channel, gather ICE, return the offer SDP.
+/// - `peer.open(answerSdp: string) -> Promise<{ readable, writable, close() }>`:
+///   apply the answer; resolve once the data channel is open (reject if it is
+///   not), with a socket whose streams carry the channel's bytes.
+/// - `peer.close()`.
+async fn connect_remote(config: &WebRtcConfig, factory: &js_sys::Function) -> io::Result<Carrier> {
+    let created = factory.call0(&JsValue::NULL).map_err(|e| net_err(js_msg(&e)))?;
+    let peer = JsFuture::from(js_sys::Promise::resolve(&created)).await.map_err(|e| net_err(js_msg(&e)))?;
+    let guard = RemotePeer(peer.clone());
+
+    let stun = Array::new();
+    for url in &config.stun_urls {
+        stun.push(&JsValue::from_str(url));
+    }
+    let offer_sdp = call_js(&peer, "offer", &Array::of1(&stun))
+        .await?
+        .as_string()
+        .ok_or_else(|| net_err("WebRTC peer returned no offer SDP"))?;
+    if !offer_sdp.contains("a=candidate:") {
+        return Err(net_err("Snowflake: WebRTC gathered no ICE candidates"));
+    }
+    let offer_json = serde_json::json!({ "type": "offer", "sdp": offer_sdp }).to_string();
+
+    let nat = nat_type();
+    info!("Snowflake: asking the broker for a proxy (NAT: {nat}; peer connection hosted by a page)");
+    let answer = broker_exchange(config, &offer_json, nat).await?;
+    let answer: serde_json::Value =
+        serde_json::from_str(&answer).map_err(|e| net_err(format!("bad SDP answer: {e}")))?;
+    let answer_sdp = answer.get("sdp").and_then(|s| s.as_str()).ok_or_else(|| net_err("SDP answer has no sdp"))?;
+
+    let socket = match call_js(&peer, "open", &Array::of1(&JsValue::from_str(answer_sdp))).await {
+        Ok(socket) => socket,
+        Err(e) => {
+            if nat == "unrestricted" && !UNRESTRICTED_FAILED.with(|f| f.replace(true)) {
+                info!("Snowflake: a proxy matched for an unrestricted NAT was unreachable; asking for open proxies from now on");
+            }
+            return Err(net_err(format!("Snowflake: the proxy's data channel did not open ({e})")));
+        }
+    };
+    let stream = JsProxyStream::wrap(socket)?;
+    info!("Snowflake: data channel to a volunteer proxy is open (hosted by a page)");
+    Ok(Box::pin(RemoteStream { stream, _peer: guard }))
 }
 
 impl AsyncRead for WebRtcStream {

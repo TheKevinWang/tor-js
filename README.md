@@ -285,10 +285,36 @@ relative URLs (or mount the backend at the site root); a document the onion
 serves brings the onion's own `Content-Security-Policy` with it; only
 `fetch`-style requests, navigations and form posts under the Service Worker's
 scope are seen (cross-origin iframes and third-party pages are not); uploads are
-buffered in memory; the WebRTC Snowflake carrier is unavailable because workers
-have no `RTCPeerConnection`. The onion address is public in the manifest: it is a
+buffered in memory. The onion address is public in the manifest: it is a
 routing table, not a secret. Anyone who can run script on the static origin can
 use the adapter to reach the backend, exactly as they could use its cookies.
+
+### WebRTC carrier in the site adapter
+
+`"client": { "snowflake": "webrtc" }` sends the site's Tor traffic through a
+volunteer Snowflake proxy instead of a WebSocket to the Snowflake server, which
+a censor can block by name. Workers have no `RTCPeerConnection`, so the **page
+hosts the peer connection**: the Tor client (in the host worker) does the broker
+exchange and everything above the data channel, and asks an open page of the
+site to create the peer connection and relay the data channel's bytes over a
+`MessagePort` (`src/site/peerPage.ts`, `src/site/peerRelay.ts`). Consequences:
+
+- A tab of the site must stay open. If the owning tab closes, its connection
+  dies, the Snowflake session redials, and the new peer is hosted by another open
+  tab; with no tab open, requests fail.
+- It cannot be combined with `"host": "service-worker"` (the manifest is
+  rejected). When no page is attached (someone opens a Tor path in a new tab with
+  the site closed) the Service Worker's fallback refuses WebRTC with an error
+  rather than quietly switching to the WebSocket carrier, which exposes you to a
+  different party.
+- Starting is slower and more variable than the WebSocket carrier (broker match,
+  ICE gathering; typically 15 to 30 s cold). `website/public/site-demo/webrtc.html`
+  is a working example.
+
+For other uses of tor-js inside a worker, `TorClientOptions.rtcPeerFactory` lets
+the WebRTC carrier take its peer connection from anywhere (see `RtcPeer` in
+`src/types.ts`); `new TorClient({ snowflake: 'webrtc' })` on a plain page is
+unchanged.
 
 ## Singleton
 

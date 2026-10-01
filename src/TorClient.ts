@@ -100,6 +100,12 @@ export class TorClient {
       wasmOptions = wasmOptions.withBridges(bridges, undefined);
     }
 
+    // Workers have no RTCPeerConnection; a factory lets the WebRTC carrier
+    // borrow one from a page.
+    if (options.rtcPeerFactory) {
+      wasmOptions = wasmOptions.withPeerFactory(options.rtcPeerFactory);
+    }
+
     // Auto-attempt fast bootstrap from gateway — only when one is configured.
     // The archive is zstd-compressed; the WASM side decompresses it.
     // Go through the provider rather than capturing a gateway: it picks per

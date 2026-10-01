@@ -234,6 +234,8 @@ pub struct TorClientOptions {
     /// other than the built-in ones (see `pt.rs`).
     bridges: Vec<String>,
     connect_pt: Option<js_sys::Function>,
+    /// Creates WebRTC peers where `RTCPeerConnection` does not exist (a worker).
+    rtc_peer_factory: Option<js_sys::Function>,
 }
 
 #[wasm_bindgen]
@@ -256,6 +258,7 @@ impl TorClientOptions {
             fast_bootstrap: None,
             bridges: Vec::new(),
             connect_pt: None,
+            rtc_peer_factory: None,
         }
     }
 
@@ -267,6 +270,16 @@ impl TorClientOptions {
     pub fn with_bridges(mut self, lines: Vec<String>, connect_pt: Option<js_sys::Function>) -> Self {
         self.bridges = lines;
         self.connect_pt = connect_pt;
+        self
+    }
+
+    /// Create the Snowflake WebRTC carrier's peer connections with `factory`
+    /// instead of the global `RTCPeerConnection`, which workers do not have.
+    /// `factory() => Promise<peer>`; see `snowflake/webrtc.rs` (`connect_remote`)
+    /// for the peer contract.
+    #[wasm_bindgen(js_name = withPeerFactory)]
+    pub fn with_peer_factory(mut self, factory: js_sys::Function) -> Self {
+        self.rtc_peer_factory = Some(factory);
         self
     }
 
@@ -439,6 +452,10 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     let config = config_builder
         .build()
         .map_err(|e| JsTorError::config(format!("Failed to build config: {}", e)).into_js_value())?;
+
+    if let Some(factory) = options.rtc_peer_factory {
+        snowflake::set_peer_factory(factory);
+    }
 
     // 2. Create WASM runtime with JS connect function
     let mut runtime = WasmRuntime::default();

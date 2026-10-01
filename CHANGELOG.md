@@ -16,6 +16,12 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **WebRTC Snowflake in the site adapter.** `"client": { "snowflake": "webrtc" }`
+  in `tor-site.json`: a page of the site hosts the `RTCPeerConnection` (workers
+  have none) and relays the data channel to the Tor client in the host worker;
+  if that page closes the carrier redials through another open page.
+  `TorClientOptions.rtcPeerFactory` (and the WASM `withPeerFactory`) exposes the
+  seam for other callers. The plain-page WebRTC carrier is unchanged.
 - **`response.rawHeaders`.** `TorClient.fetch()` responses now carry the header
   list exactly as received (`[name, value][]`, repeats kept) because the
   `Response` constructor drops `Set-Cookie`.

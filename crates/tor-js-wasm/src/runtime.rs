@@ -285,7 +285,7 @@ impl Debug for JsProxyStream {
 
 impl JsProxyStream {
     /// Wrap a JS socket that exposes `readable`, `writable`, and `close()`.
-    fn wrap(socket: wasm_bindgen::JsValue) -> IoResult<Self> {
+    pub(crate) fn wrap(socket: wasm_bindgen::JsValue) -> IoResult<Self> {
         use wasm_bindgen::JsCast;
 
         let readable: web_sys::ReadableStream = js_sys::Reflect::get(&socket, &"readable".into())

@@ -93,8 +93,14 @@ describe('manifest routing', () => {
     assert.throws(() => parse({ tor: ['api/**'] }), /start with "\/"/)
     assert.throws(() => parse({ tor: [{ strip: '/x' }] }), /match/)
     assert.throws(() => parse({ tor: [{ match: '/x', strip: 'x' }] }), /strip/)
-    assert.throws(() => parse({ client: { snowflake: 'webrtc' } }), /WebRTC/)
+    assert.throws(() => parse({ client: { snowflake: 'carrier-pigeon' } }), /"websocket" or "webrtc"/)
+    assert.throws(() => parse({ client: { snowflake: 'webrtc', host: 'service-worker' } }), /"webrtc".*"service-worker"/)
     assert.throws(() => parse({ client: { host: 'nope' } }), /host/)
+  })
+
+  test('the WebRTC carrier is accepted with the default (host worker) placement', () => {
+    assert.equal(parse({ client: { snowflake: 'webrtc' } }).client.snowflake, 'webrtc')
+    assert.equal(parse({ client: { snowflake: 'websocket', host: 'service-worker' } }).client.host, 'service-worker')
   })
 
   test('client defaults to Snowflake over WebSocket with a persistent host', () => {

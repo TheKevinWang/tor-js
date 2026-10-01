@@ -57,6 +57,13 @@ export type TorClientOptions = {
   snowflake?: boolean | 'websocket' | 'webrtc';
 
   /**
+   * Where the Snowflake WebRTC carrier (`snowflake: 'webrtc'`) gets its
+   * `RTCPeerConnection` when the global one does not exist, as in a worker.
+   * The site adapter's host worker passes one that borrows a page's.
+   */
+  rtcPeerFactory?: RtcPeerFactory;
+
+  /**
    * Bridges to use as the only guards, in Tor `Bridge` line syntax without the
    * `Bridge` keyword, e.g. `snowflake 192.0.2.3:80 <fingerprint> ws=wss://...`.
    * The `snowflake` transport is built in; plain bridges (`ip:port fingerprint`)
@@ -74,6 +81,32 @@ export type TorClientOptions = {
    */
   bootstrapUrl?: string;
 };
+
+/**
+ * A byte stream to a WebRTC data channel hosted elsewhere: WHATWG streams of
+ * `Uint8Array` plus `close()`, the same shape as a relay socket.
+ */
+export interface RtcSocket {
+  readable: ReadableStream<Uint8Array>;
+  writable: WritableStream<Uint8Array>;
+  close(): void;
+}
+
+/**
+ * One WebRTC peer connection hosted outside the Tor client's own context, for
+ * the Snowflake WebRTC carrier. Workers have no `RTCPeerConnection`, so the
+ * client can borrow one from a page (see `tor-js/site`). The client does the
+ * broker exchange itself; the peer only does what needs the browser object.
+ */
+export interface RtcPeer {
+  /** Create the peer connection and its data channel, gather ICE candidates, return the offer SDP. */
+  offer(stunUrls: string[]): Promise<string>;
+  /** Apply the broker's answer SDP; resolve with the channel's bytes once it is open, reject if it does not open. */
+  open(answerSdp: string): Promise<RtcSocket>;
+  close(): void;
+}
+
+export type RtcPeerFactory = () => Promise<RtcPeer>;
 
 export type { TorStorage } from '#wasm';
 

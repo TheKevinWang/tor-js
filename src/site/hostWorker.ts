@@ -18,6 +18,7 @@ import { setWasmUrl } from '../wasm.js';
 import { parseManifest } from './manifest.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { serveBackend } from './rpc.js';
+import { acquirePeerPort, createRemotePeerFactory, type PageTarget } from './peerRelay.js';
 
 export interface HostConfig {
   /** Absolute URL of tor-site.json. */
@@ -30,7 +31,8 @@ export interface HostConfig {
 
 export type HostControl =
   | { t: 'attach'; port: MessagePort; config: HostConfig }
-  | { t: 'warm'; config: HostConfig };
+  | { t: 'warm'; config: HostConfig }
+  | { t: 'bye' };
 
 // `self` is a SharedWorkerGlobalScope or a DedicatedWorkerGlobalScope; the two
 // differ only in how messages arrive, handled below.
@@ -44,9 +46,16 @@ let backendKey = '';
 let lastStatus: SiteStatus = { state: 'idle', where: 'host' };
 const servers = new Set<ReturnType<typeof serveBackend>>();
 
+// Pages that can host a WebRTC peer connection for the Snowflake WebRTC carrier,
+// oldest first (workers have no RTCPeerConnection; see peerRelay.ts).
+const pages: PageTarget[] = [];
+const peerFactory = createRemotePeerFactory(() => acquirePeerPort(pages));
+
 function getBackend(config: HostConfig): Promise<LocalBackend> {
   const key = JSON.stringify(config);
   if (backend && key === backendKey) return backend;
+  // A different site configuration (another manifest): stop the old client.
+  backend?.then((old) => old.close(), () => {});
   backendKey = key;
   const attempt = (async () => {
     const res = await fetch(config.manifestUrl, { cache: 'no-cache' });
@@ -59,6 +68,7 @@ function getBackend(config: HostConfig): Promise<LocalBackend> {
       visibleOrigin: config.visibleOrigin,
       scopePath: config.scopePath,
       where: 'host',
+      peerFactory,
       onStatus(status) {
         lastStatus = status;
         for (const s of servers) s.push({ t: 'status', status });
@@ -100,9 +110,22 @@ if ('onconnect' in scope) {
   // SharedWorker: every page connects with its own port.
   scope.onconnect = (event) => {
     const port = event.ports[0];
-    port.onmessage = (e) => control(e.data as HostControl);
+    const target: PageTarget = { post: (msg, transfer) => port.postMessage(msg, transfer) };
+    pages.push(target);
+    port.onmessage = (e) => {
+      const msg = e.data as HostControl;
+      if (msg.t === 'bye') {
+        // The page is closing: do not wait for it when a peer is needed.
+        const i = pages.indexOf(target);
+        if (i >= 0) pages.splice(i, 1);
+      } else {
+        control(msg);
+      }
+    };
     port.start();
   };
 } else {
+  // Dedicated Worker: the one page that started it.
+  pages.push({ post: (msg, transfer) => (self as unknown as Worker).postMessage(msg, transfer) });
   scope.onmessage = (e) => control(e.data as HostControl);
 }

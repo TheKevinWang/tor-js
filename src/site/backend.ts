@@ -9,6 +9,7 @@
  */
 
 import { TorClient } from '../TorClient.js';
+import type { RtcPeerFactory } from '../types.js';
 import { Log, type LogLevel } from '../Log.js';
 import { createAutoStorage } from '../storage/index.js';
 import { CookieJar, indexedDbCookieStore } from './cookieJar.js';
@@ -44,10 +45,13 @@ export interface LocalBackendOptions {
   onLog?: (level: LogLevel, message: string) => void;
   /** How long a request waits for Tor to become ready before failing. */
   readyTimeoutMs?: number;
+  /** Creates WebRTC peer connections hosted by a page, for the WebRTC carrier (workers have none). */
+  peerFactory?: RtcPeerFactory;
 }
 
 export class LocalBackend implements SiteBackend {
   private http: Promise<TorHttp> | null = null;
+  private client: TorClient | null = null;
   private status: SiteStatus = { state: 'idle' };
   private readonly jar = new CookieJar(indexedDbCookieStore());
 
@@ -77,16 +81,37 @@ export class LocalBackend implements SiteBackend {
     this.opts.onStatus?.(this.status);
   }
 
+  /** Stop the Tor client, if one was started. */
+  close(): void {
+    this.client?.close();
+    this.client = null;
+    this.http = null;
+  }
+
   private ensure(): Promise<TorHttp> {
     if (this.http) return this.http;
     const { manifest, manifestUrl, visibleOrigin, scopePath } = this.opts;
+
+    // The WebRTC carrier needs an RTCPeerConnection: global (a page) or borrowed
+    // from a page (a factory). Without either, say so; never fall back to the
+    // WebSocket carrier, which exposes the client to different parties.
+    const hasRtc = typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection !== 'undefined';
+    if (manifest.client.snowflake === 'webrtc' && !this.opts.peerFactory && !hasRtc) {
+      const err = new Error(
+        'the WebRTC Snowflake carrier needs an open page of the site to host the peer connection, and none is attached '
+        + '(open the site in a tab first, or use "client.snowflake": "websocket")',
+      );
+      this.setStatus({ state: 'error', message: err.message });
+      return Promise.reject(err);
+    }
     this.setStatus({ state: 'bootstrapping' });
 
     const bootstrapUrl = manifest.client.bootstrapUrl
       ? new URL(manifest.client.bootstrapUrl, manifestUrl).href
       : undefined;
     const client = new TorClient({
-      snowflake: manifest.client.snowflake === false ? undefined : (manifest.client.snowflake ?? true),
+      snowflake: manifest.client.snowflake ?? true,
+      rtcPeerFactory: this.opts.peerFactory,
       storage: createAutoStorage('tor-site'),
       bootstrapUrl,
       logLevel: 'info',
@@ -95,6 +120,7 @@ export class LocalBackend implements SiteBackend {
       }),
     });
 
+    this.client = client;
     const timeoutMs = this.opts.readyTimeoutMs ?? 120_000;
     let timer: ReturnType<typeof setTimeout>;
     const timeout = new Promise<never>((_, reject) => {
@@ -114,6 +140,7 @@ export class LocalBackend implements SiteBackend {
       .catch((e) => {
         // Discard the failed client so the next request starts a fresh attempt.
         this.http = null;
+        this.client = null;
         client.close();
         const message = e instanceof Error ? e.message : String(e);
         this.setStatus({ state: 'error', message });

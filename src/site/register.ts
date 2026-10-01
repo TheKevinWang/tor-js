@@ -13,6 +13,7 @@
  */
 
 import type { SiteStatus } from './backend.js';
+import { servePeer } from './peerPage.js';
 
 export type { SiteStatus } from './backend.js';
 
@@ -163,6 +164,17 @@ function startHost(opts: { script: string; name: string; config: HostConfig }): 
     console.warn('[tor-site] cannot start the Tor host worker; Tor will run inside the Service Worker', e);
     return null;
   }
+
+  // The host borrows this page's RTCPeerConnection for the Snowflake WebRTC
+  // carrier (workers have none): see peerRelay.ts. Listen before anything else
+  // is sent, so the first request cannot be missed.
+  const onHostMessage = (event: MessageEvent) => {
+    const data = event.data as { t?: string; port?: MessagePort } | null;
+    if (data?.t === 'peer-request' && data.port) servePeer(data.port);
+  };
+  if (control instanceof MessagePort) control.onmessage = onHostMessage;
+  else control.onmessage = onHostMessage;
+  addEventListener('pagehide', () => control.postMessage({ t: 'bye' }));
 
   const attach = () => {
     const sw = navigator.serviceWorker.controller;

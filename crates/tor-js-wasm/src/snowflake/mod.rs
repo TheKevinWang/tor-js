@@ -19,7 +19,8 @@
 //! - otherwise `url=<broker>` (plus `ice=stun:...,stun:...` and
 //!   `fingerprint=`, as in Tor Browser's Snowflake lines): ask the broker for
 //!   a volunteer proxy and reach it over a WebRTC data channel. Needs a page
-//!   with `RTCPeerConnection`.
+//!   with `RTCPeerConnection`, or a peer factory (a worker has no
+//!   `RTCPeerConnection`; a page can host the peer connection for it).
 //!
 //! Sessions are opened by a task of their own ([`pool`]), so one that takes
 //! longer than arti's dial timeout is still there for arti's next attempt.
@@ -112,8 +113,7 @@ impl CarrierConfig {
                 Rc::new(move || {
                     let config = config.clone();
                     async move {
-                        let dc = webrtc::WebRtcStream::dial(&config).await?;
-                        Ok(Box::pin(dc) as Carrier)
+                        webrtc::dial(&config).await
                     }
                     .boxed_local()
                 })
@@ -159,6 +159,13 @@ async fn open(config: CarrierConfig) -> io::Result<Stack> {
     let stream = smux::SmuxStream::open(kcp, smux::FIRST_CLIENT_STREAM).await?;
     info!("Snowflake: session open");
     Ok(Box::pin(stream))
+}
+
+/// Create WebRTC peer connections through `factory` (a JS function) instead of
+/// the global `RTCPeerConnection`; for workers, which have none. See
+/// `webrtc::connect_remote` for what the factory must return.
+pub(crate) fn set_peer_factory(factory: js_sys::Function) {
+    webrtc::set_peer_factory(factory);
 }
 
 /// Open a session ahead of time and wait for it (see [`pool::warm`]).

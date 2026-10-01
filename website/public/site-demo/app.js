@@ -10,7 +10,7 @@ const site = await window.torSite;
 function showStatus(s) {
   $('dot').dataset.state = s.state;
   $('status-text').textContent =
-    s.state === 'ready' ? 'Connected to Tor'
+    s.state === 'ready' ? `Connected to Tor${s.where === 'host' ? ' (worker)' : s.where ? ' (service worker)' : ''}`
     : s.state === 'error' ? `Tor failed: ${s.message}`
     : s.state === 'bootstrapping' ? 'Connecting to Tor (first time takes a few seconds)…'
     : 'Waiting…';

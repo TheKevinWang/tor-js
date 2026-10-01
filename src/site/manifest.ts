@@ -29,7 +29,8 @@ export interface TorRule {
 }
 
 export interface ClientOptions {
-  snowflake?: boolean | 'websocket';
+  /** `'webrtc'` goes through a volunteer proxy; a page hosts the peer connection (see peerRelay.ts). */
+  snowflake?: boolean | 'websocket' | 'webrtc';
   /** URL (relative to the manifest) of a directory snapshot; see TorClientOptions.bootstrapUrl. */
   bootstrapUrl?: string;
   /** URL (relative to the manifest) of tor_js_bg.wasm, for bundles that do not embed it. */
@@ -146,9 +147,8 @@ function parseClient(v: unknown): ClientOptions {
   const c = v as Record<string, unknown>;
   const out: ClientOptions = { snowflake: true, host: 'auto' };
   if (c.snowflake !== undefined) {
-    if (c.snowflake !== true && c.snowflake !== 'websocket') {
-      // WebRTC needs RTCPeerConnection, which workers do not have.
-      throw new Error('tor-site manifest: "client.snowflake" must be true or "websocket" (WebRTC does not exist in workers)');
+    if (c.snowflake !== true && c.snowflake !== 'websocket' && c.snowflake !== 'webrtc') {
+      throw new Error('tor-site manifest: "client.snowflake" must be true, "websocket" or "webrtc"');
     }
     out.snowflake = c.snowflake;
   }
@@ -163,6 +163,13 @@ function parseClient(v: unknown): ClientOptions {
       throw new Error('tor-site manifest: "client.host" must be "auto" or "service-worker"');
     }
     out.host = c.host;
+  }
+  if (out.snowflake === 'webrtc' && out.host === 'service-worker') {
+    // Workers have no RTCPeerConnection; only a page can host one, and with the
+    // Tor client inside the Service Worker no page is attached.
+    throw new Error(
+      'tor-site manifest: "client.snowflake": "webrtc" needs a page to host the peer connection, so it cannot be combined with "client.host": "service-worker"',
+    );
   }
   return out;
 }
