@@ -16,6 +16,15 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Connection reuse for `fetch` over plain HTTP.** A GET or HEAD without a body keeps its
+  Tor stream after the response and the next request to the same host uses it, instead of
+  opening a new stream (a round trip across the whole circuit for an onion service) for
+  every request. In a measured session, alternating with and without reuse on the same
+  circuits, time to the first byte fell from 2.0 s to 1.2 s and a complete page from
+  2.8 s to 1.65 s. A connection is kept only when the response was read to its exact end;
+  one the server has closed is dropped, and a request that fails on a reused connection is
+  sent again on a new one. POSTs, requests with a body, HTTPS and requests that set their own
+  `Connection` header are unchanged.
 - **Steadier start-up on slow Snowflake proxies.** Circuits through a bridge get at
   least 7 s to build (Tor's default floor of 10 ms let a slow proxy's circuits be
   abandoned until the only bridge was disabled); the first broker request is

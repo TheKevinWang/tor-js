@@ -36,6 +36,7 @@ mod error;
 mod fast_bootstrap;
 mod fetch;
 mod bridges;
+mod conn_pool;
 mod runtime;
 mod snowflake;
 mod storage;
@@ -634,6 +635,59 @@ struct FetchInit {
     // extracted separately via extract_body_from_js.
 }
 
+// ----------------------------------------------------------------------------
+// Connection reuse
+// ----------------------------------------------------------------------------
+
+/// How long a connection waits in the pool when the server did not say. Short
+/// enough that it is rarely closed by the server meanwhile (a Gunicorn default is
+/// 2 s, most others 5 s or more; an announced `Keep-Alive: timeout` overrides).
+const POOL_IDLE_MS: f64 = 15_000.0;
+/// Keep-alive timeouts are cut by this much, so a connection is not offered in
+/// the last moments before the server closes it.
+const POOL_IDLE_MARGIN_MS: f64 = 1_000.0;
+const POOL_MAX_PER_HOST: usize = 6;
+const POOL_MAX_TOTAL: usize = 16;
+
+thread_local! {
+    static IDLE_CONNECTIONS: std::cell::RefCell<conn_pool::IdlePool<fetch::BoxedConn>> =
+        std::cell::RefCell::new(conn_pool::IdlePool::new(POOL_MAX_PER_HOST, POOL_MAX_TOTAL));
+    static POOL_EPOCH: web_time_compat::Instant = web_time_compat::Instant::now();
+}
+
+fn pool_now_ms() -> f64 {
+    POOL_EPOCH.with(|e| e.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// A function that puts a finished connection back for `host:port`.
+fn release_to_pool(host: String, port: u16) -> fetch::ReleaseFn {
+    Box::new(move |conn, announced_secs| {
+        let now = pool_now_ms();
+        let idle = match announced_secs {
+            Some(secs) => (f64::from(secs) * 1000.0 - POOL_IDLE_MARGIN_MS).clamp(0.0, POOL_IDLE_MS),
+            None => POOL_IDLE_MS,
+        };
+        debug!("Keeping the connection to {host}:{port} for reuse (up to {:.0}s)", idle / 1000.0);
+        IDLE_CONNECTIONS.with(|pool| pool.borrow_mut().put(&host, port, conn, now, now + idle));
+    })
+}
+
+/// A pooled connection for `host:port` that is still open, if there is one.
+async fn take_idle_connection(host: &str, port: u16) -> Option<fetch::BoxedConn> {
+    use futures::io::AsyncReadExt;
+    loop {
+        let mut conn = IDLE_CONNECTIONS.with(|pool| pool.borrow_mut().take(host, port, pool_now_ms()))?;
+        // A connection the server has closed since it was put back reads as
+        // ended (or as an error) at once; one that is still open has nothing to
+        // read yet. Anything else (stray bytes) is not a connection to trust.
+        let mut probe = [0u8; 1];
+        if futures::future::poll_immediate(conn.read(&mut probe)).await.is_none() {
+            return Some(conn);
+        }
+        debug!("Dropping a pooled connection to {host}:{port} that the server closed");
+    }
+}
+
 /// Perform a fetch request, returning a real browser `Response` object.
 ///
 /// The Response is created as soon as headers arrive. Its body is a
@@ -702,22 +756,51 @@ async fn fetch_impl(
     // Check abort before connecting (circuit building can take several seconds)
     check_aborted(signal.as_ref())?;
 
-    // Connect through Tor
-    debug!("Connecting to {}:{}...", host, port);
-    let stream = client
-        .connect((host, port))
-        .await
-        .map_err(|e| JsTorError::connection(format!("Failed to connect: {}", e)).into_js_value())?;
+    // A request that may keep its connection first looks for one already open.
+    // Reusing skips the round trip to the far end that opening a stream costs.
+    let keep_alive = fetch::wants_keep_alive(&url, &method, &headers, &request_body);
+    let pooled = if keep_alive { take_idle_connection(host, port).await } else { None };
 
-    // Check abort before sending the HTTP request
-    check_aborted(signal.as_ref())?;
-
-    debug!("Connected, making HTTP request...");
+    let connect = || async {
+        debug!("Connecting to {}:{}...", host, port);
+        let stream = client
+            .connect((host, port))
+            .await
+            .map_err(|e| JsTorError::connection(format!("Failed to connect: {}", e)).into_js_value())?;
+        Ok::<fetch::BoxedConn, JsValue>(Box::new(stream))
+    };
+    let release = || keep_alive.then(|| release_to_pool(host.to_owned(), port));
 
     // Perform the HTTP request — resolves as soon as headers arrive
-    let result = fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config))
-        .await
-        .map_err(|e| e.into_js_value())?;
+    let result = match pooled {
+        Some(conn) => {
+            info!("Reusing an open connection to {}:{}", host, port);
+            check_aborted(signal.as_ref())?;
+            // The request is a GET or HEAD without a body, so sending it again is
+            // safe: if the reused connection fails (the server closed it just as
+            // it was picked), the request goes out once more on a new one.
+            match fetch::fetch_headers(conn, &url, method.clone(), headers.clone(), fetch::RequestBody::None, is_https, host, Some(tls_config.clone()), release()).await {
+                Ok(result) => result,
+                Err(e) => {
+                    info!("A reused connection failed ({}); retrying on a new one", e.message);
+                    let stream = connect().await?;
+                    check_aborted(signal.as_ref())?;
+                    fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
+                        .await
+                        .map_err(|e| e.into_js_value())?
+                }
+            }
+        }
+        None => {
+            let stream = connect().await?;
+            // Check abort before sending the HTTP request
+            check_aborted(signal.as_ref())?;
+            debug!("Connected, making HTTP request...");
+            fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
+                .await
+                .map_err(|e| e.into_js_value())?
+        }
+    };
 
     // Build web_sys::Headers from the parsed headers
     let js_headers = web_sys::Headers::new()

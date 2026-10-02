@@ -7,11 +7,14 @@
 //! Body reading is deferred — chunks are read incrementally via `read_chunk()`.
 
 use crate::error::JsTorError;
-use futures::io::{AsyncReadExt, AsyncWriteExt};
+use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use futures::stream::{Stream, StreamExt};
 use http::Method;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll};
 use tracing::{debug, info};
 use url::Url;
 
@@ -57,6 +60,42 @@ const MAX_HEADER_SIZE: usize = 64 * 1024;
 /// Type-erased async reader for the response body stream.
 pub type BoxedReader = Box<dyn futures::io::AsyncRead + Unpin>;
 
+/// A connection a request can be written to and its response read from.
+pub trait Conn: AsyncRead + AsyncWrite + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> Conn for T {}
+
+/// Type-erased connection, so one kept for reuse is the same type however it was made.
+pub type BoxedConn = Box<dyn Conn>;
+
+/// Receives a connection whose response was read to its exact end and which may
+/// carry another request, with the idle time the server announced (seconds, from
+/// `Keep-Alive: timeout=`), if any.
+pub type ReleaseFn = Box<dyn FnOnce(BoxedConn, Option<u32>)>;
+
+/// A connection shared between the body reader (which reads the response) and
+/// the slot it is handed back from, so it can leave the reader intact once the
+/// body is complete. Everything runs on one thread, so a `RefCell` is enough.
+type ConnSlot = Rc<RefCell<Option<BoxedConn>>>;
+
+struct SharedConn(ConnSlot);
+
+impl AsyncRead for SharedConn {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+        match self.0.borrow_mut().as_mut() {
+            Some(conn) => Pin::new(conn).poll_read(cx, buf),
+            // Already handed back: nothing more to read from this response.
+            None => Poll::Ready(Ok(0)),
+        }
+    }
+}
+
+/// What a body reader needs to give its connection back.
+struct Release {
+    slot: ConnSlot,
+    give_back: ReleaseFn,
+    idle_timeout_secs: Option<u32>,
+}
+
 /// How the response body is framed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BodyFraming {
@@ -93,6 +132,11 @@ pub struct BodyReader {
     chunk_remaining: usize,
     /// Chunked decoder: whether we're waiting for the trailing \r\n after chunk data.
     awaiting_chunk_crlf: bool,
+    /// Chunked decoder: the terminating chunk and its trailer section were read
+    /// completely, so nothing of this response is left on the connection.
+    trailers_clean: bool,
+    /// Set when the connection may be reused once the body has been read.
+    release: Option<Release>,
 }
 
 impl BodyReader {
@@ -105,6 +149,34 @@ impl BodyReader {
             total_read: 0,
             chunk_remaining: 0,
             awaiting_chunk_crlf: false,
+            trailers_clean: false,
+            release: None,
+        }
+    }
+
+    /// Hand `slot`'s connection to `give_back` when the body has been read to its
+    /// exact end with nothing left over; otherwise it is closed with the reader.
+    /// `slot` must hold the connection this reader reads from.
+    fn with_release(mut self, slot: ConnSlot, give_back: ReleaseFn, idle_timeout_secs: Option<u32>) -> Self {
+        self.release = Some(Release { slot, give_back, idle_timeout_secs });
+        self
+    }
+
+    /// Called once the body is over. Gives the connection back if the whole
+    /// response, and nothing but it, has been consumed: the framing says the
+    /// body ended where it ended, and no bytes were read past that point.
+    fn finish(&mut self, read_ok: bool) {
+        let Some(release) = self.release.take() else { return };
+        let complete = match &self.framing {
+            BodyFraming::None => true,
+            BodyFraming::ContentLength(len) => self.total_read == *len,
+            BodyFraming::Chunked => self.trailers_clean,
+            BodyFraming::UntilEof => false,
+        };
+        if read_ok && complete && self.buffer.is_empty() {
+            if let Some(conn) = release.slot.borrow_mut().take() {
+                (release.give_back)(conn, release.idle_timeout_secs);
+            }
         }
     }
 
@@ -114,7 +186,7 @@ impl BodyReader {
             return Ok(None);
         }
 
-        match &self.framing {
+        let result = match &self.framing {
             BodyFraming::None => {
                 self.done = true;
                 Ok(None)
@@ -125,7 +197,11 @@ impl BodyReader {
             }
             BodyFraming::Chunked => self.read_chunk_chunked().await,
             BodyFraming::UntilEof => self.read_chunk_eof().await,
+        };
+        if self.done {
+            self.finish(result.is_ok());
         }
+        result
     }
 
     /// Read the entire remaining body by calling `read_chunk()` in a loop.
@@ -302,7 +378,12 @@ impl BodyReader {
                     self.buffer.drain(..pos + 2);
 
                     if size == 0 {
-                        // Terminal chunk
+                        // Terminal chunk. A connection that is to be reused must
+                        // also have the trailer section (usually only the empty
+                        // line) read off it, or that would open the next response.
+                        if self.release.is_some() {
+                            self.trailers_clean = self.consume_trailers().await;
+                        }
                         self.done = true;
                         return Ok(None);
                     }
@@ -321,6 +402,26 @@ impl BodyReader {
                         ));
                     }
                 }
+            }
+        }
+    }
+
+    /// Read the trailer section after the terminating chunk, up to and including
+    /// the empty line that ends it. False if the connection ended or failed first.
+    async fn consume_trailers(&mut self) -> bool {
+        loop {
+            match find_crlf(&self.buffer) {
+                Some(0) => {
+                    self.buffer.drain(..2);
+                    return true;
+                }
+                Some(pos) => {
+                    self.buffer.drain(..pos + 2);
+                }
+                None => match self.fill_buffer_from_stream().await {
+                    Ok(n) if n > 0 => {}
+                    _ => return false,
+                },
             }
         }
     }
@@ -349,6 +450,7 @@ pub fn build_request_head(
     method: &Method,
     headers: &HashMap<String, String>,
     body: &RequestBody,
+    keep_alive: bool,
 ) -> Result<Vec<u8>, JsTorError> {
     let host = url.host_str().unwrap_or("localhost");
     let path = if url.path().is_empty() {
@@ -379,7 +481,7 @@ pub fn build_request_head(
         request.push_str("Accept: */*\r\n");
     }
     if !has_header(headers, "Connection") {
-        request.push_str("Connection: close\r\n");
+        request.push_str(if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" });
     }
 
     // Add custom headers (reject any with CR/LF to prevent header injection).
@@ -474,11 +576,12 @@ where
     Ok(())
 }
 
-/// Write the HTTP request and read response headers.
-///
-/// Returns the parsed status/headers, the body framing mode, and any overflow
-/// bytes read past the `\r\n\r\n` header separator. The stream is borrowed
-/// mutably so the caller retains ownership for body reading.
+/// Status, headers, body framing, bytes read past the header separator, and
+/// whether the final response said `HTTP/1.1` (persistent unless told otherwise).
+type ResponseHead = (u16, Vec<(String, String)>, BodyFraming, Vec<u8>, bool);
+
+/// [`read_response_head`] without the HTTP version.
+#[cfg(test)]
 async fn read_response_headers<S>(
     stream: &mut S,
     method: &Method,
@@ -486,8 +589,22 @@ async fn read_response_headers<S>(
 where
     S: futures::io::AsyncRead + Unpin,
 {
+    let (status, headers, framing, overflow, _) = read_response_head(stream, method).await?;
+    Ok((status, headers, framing, overflow))
+}
+
+/// Read response headers.
+///
+/// Returns the parsed status/headers, the body framing mode, and any overflow
+/// bytes read past the `\r\n\r\n` header separator. The stream is borrowed
+/// mutably so the caller retains ownership for body reading.
+async fn read_response_head<S>(stream: &mut S, method: &Method) -> Result<ResponseHead, JsTorError>
+where
+    S: futures::io::AsyncRead + Unpin,
+{
     // Read response headers, skipping 1xx interim responses (except 101).
     let mut header_buf = Vec::new();
+    let http11: bool;
     let status: u16;
     let mut headers: Vec<(String, String)> = Vec::new();
     let overflow: Vec<u8>;
@@ -568,6 +685,7 @@ where
         }
 
         // Final response
+        http11 = parts[0].eq_ignore_ascii_case("HTTP/1.1");
         status = parsed_status;
         headers.clear();
         for line in lines {
@@ -609,16 +727,48 @@ where
         overflow.len()
     );
 
-    Ok((status, headers, framing, overflow))
+    Ok((status, headers, framing, overflow, http11))
+}
+
+/// Whether a request may ask for its connection to be kept: plain HTTP (a TLS
+/// session is not pooled), a method that is safe to send again if a reused
+/// connection turns out to be dead, no body to resend, and no `Connection`
+/// header of the caller's own to override.
+pub fn wants_keep_alive(url: &Url, method: &Method, headers: &HashMap<String, String>, body: &RequestBody) -> bool {
+    url.scheme() == "http"
+        && (*method == Method::GET || *method == Method::HEAD)
+        && matches!(body, RequestBody::None)
+        && !has_header(headers, "Connection")
+}
+
+/// Whether the connection can carry another request after this response: the
+/// server speaks HTTP/1.1, did not say `Connection: close`, and the body has a
+/// length (a body that ends when the connection does cannot be followed by anything).
+fn response_allows_reuse(http11: bool, headers: &[(String, String)], framing: &BodyFraming) -> bool {
+    let closes = headers
+        .iter()
+        .any(|(k, v)| k == "connection" && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close")));
+    http11 && !closes && *framing != BodyFraming::UntilEof
+}
+
+/// The idle time the server announced in `Keep-Alive: timeout=N`, in seconds.
+fn keep_alive_timeout(headers: &[(String, String)]) -> Option<u32> {
+    let (_, v) = headers.iter().find(|(k, _)| k == "keep-alive")?;
+    v.split(',').find_map(|part| part.trim().strip_prefix("timeout=")?.trim().parse().ok())
 }
 
 /// Perform an HTTP fetch over a Tor stream, resolving as soon as headers arrive.
 ///
 /// The returned `FetchHeadersResult` contains parsed headers and a `BodyReader`
 /// that can be used to read the body asynchronously.
+///
+/// With `release` set and a request that [`wants_keep_alive`], the connection is
+/// kept open; once the body has been read to its exact end `release` receives it.
+/// A connection that ends up not reusable (or whose body is not fully read) is
+/// closed instead and `release` is never called.
 #[expect(clippy::too_many_arguments, reason = "HTTP fetch requires many parameters")]
-pub async fn fetch_headers<S>(
-    stream: S,
+pub async fn fetch_headers(
+    stream: BoxedConn,
     url: &Url,
     method: Method,
     headers: HashMap<String, String>,
@@ -626,11 +776,10 @@ pub async fn fetch_headers<S>(
     is_https: bool,
     host: &str,
     tls_config: Option<std::sync::Arc<futures_rustls::rustls::ClientConfig>>,
-) -> Result<FetchHeadersResult, JsTorError>
-where
-    S: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin + 'static,
-{
-    let head = build_request_head(url, &method, &headers, &body)?;
+    release: Option<ReleaseFn>,
+) -> Result<FetchHeadersResult, JsTorError> {
+    let keep_alive = release.is_some() && wants_keep_alive(url, &method, &headers, &body);
+    let head = build_request_head(url, &method, &headers, &body, keep_alive)?;
     debug!("Sending {}-byte request head", head.len());
 
     if is_https {
@@ -651,8 +800,8 @@ where
         info!("TLS connection established with {}", host);
 
         write_request(&mut tls_stream, &head, body).await?;
-        let (status, resp_headers, framing, overflow) =
-            read_response_headers(&mut tls_stream, &method).await?;
+        let (status, resp_headers, framing, overflow, _) =
+            read_response_head(&mut tls_stream, &method).await?;
 
         info!("Received response headers: status={}", status);
 
@@ -666,17 +815,22 @@ where
         let mut stream = stream;
 
         write_request(&mut stream, &head, body).await?;
-        let (status, resp_headers, framing, overflow) =
-            read_response_headers(&mut stream, &method).await?;
+        let (status, resp_headers, framing, overflow, http11) =
+            read_response_head(&mut stream, &method).await?;
 
         info!("Received response headers: status={}", status);
 
-        let reader: BoxedReader = Box::new(stream);
-        Ok(FetchHeadersResult {
-            status,
-            headers: resp_headers,
-            body_reader: BodyReader::new(reader, framing, overflow),
-        })
+        let reusable = keep_alive && response_allows_reuse(http11, &resp_headers, &framing);
+        let idle_timeout = keep_alive_timeout(&resp_headers);
+        let body_reader = match release {
+            Some(give_back) if reusable => {
+                let slot: ConnSlot = Rc::new(RefCell::new(Some(stream)));
+                let reader: BoxedReader = Box::new(SharedConn(slot.clone()));
+                BodyReader::new(reader, framing, overflow).with_release(slot, give_back, idle_timeout)
+            }
+            _ => BodyReader::new(Box::new(stream), framing, overflow),
+        };
+        Ok(FetchHeadersResult { status, headers: resp_headers, body_reader })
     }
 }
 
@@ -1111,7 +1265,7 @@ mod tests {
     fn head(u: &str, method: Method, headers: &[(&str, &str)], body: RequestBody) -> String {
         let map: HashMap<String, String> =
             headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let bytes = build_request_head(&url(u), &method, &map, &body).unwrap();
+        let bytes = build_request_head(&url(u), &method, &map, &body, false).unwrap();
         String::from_utf8(bytes).unwrap()
     }
 
@@ -1257,7 +1411,7 @@ mod tests {
             &url("https://example.com/"),
             &Method::GET,
             &map,
-            &RequestBody::None,
+            &RequestBody::None, false,
         )
         .unwrap_err();
         assert_eq!(err.code, "INVALID_HEADER");
@@ -1271,7 +1425,7 @@ mod tests {
                 &url("https://example.com/"),
                 &Method::GET,
                 &map,
-                &RequestBody::None,
+                &RequestBody::None, false,
             )
             .unwrap_err();
             assert_eq!(err.code, "INVALID_HEADER", "{name:?}");
@@ -1290,7 +1444,7 @@ mod tests {
                     &Method::GET,
                     &map,
                     &RequestBody::None
-                )
+                , false)
                 .is_err(),
                 "{value:?}"
             );
@@ -1308,7 +1462,7 @@ mod tests {
                 &url("https://example.com/"),
                 &Method::GET,
                 &map,
-                &RequestBody::None,
+                &RequestBody::None, false,
             )
             .unwrap_err();
             assert_eq!(err.code, "INVALID_HEADER", "{name}");
@@ -1688,5 +1842,283 @@ mod tests {
             let body = BodyReader::new(Box::new(r), framing, overflow);
             assert_eq!(body_of(body).unwrap(), b"hello world", "split at {split}");
         }
+    }
+
+    // =====================================================================
+    // Keeping a connection for the next request
+    // =====================================================================
+
+    /// A connection whose reads are scripted and whose writes are recorded in a
+    /// buffer the test keeps a handle to (the connection itself is type-erased
+    /// once it has been through the pool).
+    struct ScriptedConn {
+        reader: ScriptedReader,
+        written: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl futures::io::AsyncRead for ScriptedConn {
+        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.reader).poll_read(cx, buf)
+        }
+    }
+
+    impl futures::io::AsyncWrite for ScriptedConn {
+        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+            self.written.borrow_mut().extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    type Returned = Rc<RefCell<Vec<(BoxedConn, Option<u32>)>>>;
+
+    fn conn<I, B>(pieces: I) -> (BoxedConn, Rc<RefCell<Vec<u8>>>)
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        let written = Rc::new(RefCell::new(Vec::new()));
+        (Box::new(ScriptedConn { reader: ScriptedReader::new(pieces), written: written.clone() }), written)
+    }
+
+    fn recording_release() -> (ReleaseFn, Returned) {
+        let returned: Returned = Rc::new(RefCell::new(Vec::new()));
+        let sink = returned.clone();
+        (Box::new(move |c, t| sink.borrow_mut().push((c, t))), returned)
+    }
+
+    /// A body reader that gives its connection back when the body is complete.
+    fn reusable_reader<I, B>(pieces: I, framing: BodyFraming, overflow: &[u8]) -> (BodyReader, Returned)
+    where
+        I: IntoIterator<Item = B>,
+        B: AsRef<[u8]>,
+    {
+        let (c, _) = conn(pieces);
+        let slot: ConnSlot = Rc::new(RefCell::new(Some(c)));
+        let (release, returned) = recording_release();
+        let r = BodyReader::new(Box::new(SharedConn(slot.clone())), framing, overflow.to_vec())
+            .with_release(slot, release, None);
+        (r, returned)
+    }
+
+    #[test]
+    fn a_complete_content_length_body_gives_the_connection_back() {
+        let (mut r, returned) = reusable_reader(["hello", " world"], BodyFraming::ContentLength(11), b"");
+        assert_eq!(block_on(r.read_chunk()).unwrap().unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 0, "not before the body is complete");
+        assert_eq!(block_on(r.read_chunk()).unwrap().unwrap(), b" world");
+        assert_eq!(returned.borrow().len(), 1, "as soon as the last byte has been handed over");
+        assert_eq!(block_on(r.read_chunk()).unwrap(), None);
+        assert_eq!(returned.borrow().len(), 1, "only once");
+    }
+
+    #[test]
+    fn a_body_that_arrived_with_the_head_still_gives_the_connection_back() {
+        let (mut r, returned) = reusable_reader(Vec::<Vec<u8>>::new(), BodyFraming::ContentLength(5), b"hello");
+        assert_eq!(block_on(r.read_chunk()).unwrap().unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_zero_length_body_gives_the_connection_back() {
+        let (mut r, returned) = reusable_reader(Vec::<Vec<u8>>::new(), BodyFraming::ContentLength(0), b"");
+        assert_eq!(block_on(r.read_chunk()).unwrap(), None);
+        assert_eq!(returned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_response_with_no_body_gives_the_connection_back() {
+        let (mut r, returned) = reusable_reader(Vec::<Vec<u8>>::new(), BodyFraming::None, b"");
+        assert_eq!(block_on(r.read_chunk()).unwrap(), None);
+        assert_eq!(returned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn bytes_left_after_the_body_keep_the_connection_from_being_reused() {
+        // Whatever they are, they are not ours to guess at: the next response
+        // would start in the wrong place.
+        let (mut r, returned) = reusable_reader(Vec::<Vec<u8>>::new(), BodyFraming::ContentLength(5), b"hello, and more");
+        assert_eq!(block_on(r.read_chunk()).unwrap().unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 0);
+    }
+
+    #[test]
+    fn a_chunked_body_gives_the_connection_back_after_its_terminator() {
+        let (r, returned) = reusable_reader(["5\r\nhello\r\n", "6\r\n world\r\n", "0\r\n\r\n"], BodyFraming::Chunked, b"");
+        assert_eq!(body_of(r).unwrap(), b"hello world");
+        assert_eq!(returned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_chunked_body_with_trailers_gives_the_connection_back_once_they_are_read() {
+        let (r, returned) = reusable_reader(
+            ["5\r\nhello\r\n0\r\nX-Checksum: 1\r\nX-Other: 2\r\n", "\r\n"],
+            BodyFraming::Chunked,
+            b"",
+        );
+        assert_eq!(body_of(r).unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_chunked_terminator_split_across_reads_is_still_recognised() {
+        let wire = "5\r\nhello\r\n0\r\n\r\n";
+        for split in 1..wire.len() {
+            let (r, returned) = reusable_reader([&wire[..split], &wire[split..]], BodyFraming::Chunked, b"");
+            assert_eq!(body_of(r).unwrap(), b"hello", "split at {split}");
+            assert_eq!(returned.borrow().len(), 1, "split at {split}");
+        }
+    }
+
+    #[test]
+    fn a_chunked_body_whose_last_line_never_arrives_ends_but_is_not_reused() {
+        // Same as an unreusable connection: the body is fine, the connection is
+        // not trusted.
+        let (r, returned) = reusable_reader(["5\r\nhello\r\n0\r\n"], BodyFraming::Chunked, b"");
+        assert_eq!(body_of(r).unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 0);
+    }
+
+    #[test]
+    fn bytes_after_a_chunked_terminator_keep_the_connection_from_being_reused() {
+        let (r, returned) = reusable_reader(["5\r\nhello\r\n0\r\n\r\nHTTP/1.1 200 OK\r\n"], BodyFraming::Chunked, b"");
+        assert_eq!(body_of(r).unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 0);
+    }
+
+    #[test]
+    fn a_body_that_ends_with_the_connection_is_never_given_back() {
+        let (r, returned) = reusable_reader(["hello"], BodyFraming::UntilEof, b"");
+        assert_eq!(body_of(r).unwrap(), b"hello");
+        assert_eq!(returned.borrow().len(), 0);
+    }
+
+    #[test]
+    fn a_failed_or_short_body_is_never_given_back() {
+        let (r, returned) = reusable_reader(["hel"], BodyFraming::ContentLength(11), b"");
+        assert!(body_of(r).is_err());
+        let (r, returned2) = reusable_reader(["5\r\nhel"], BodyFraming::Chunked, b"");
+        assert!(body_of(r).is_err());
+        assert_eq!(returned.borrow().len() + returned2.borrow().len(), 0);
+    }
+
+    #[test]
+    fn a_body_that_is_not_read_to_the_end_is_never_given_back() {
+        let (mut r, returned) = reusable_reader(["hello", " world"], BodyFraming::ContentLength(11), b"");
+        assert_eq!(block_on(r.read_chunk()).unwrap().unwrap(), b"hello");
+        drop(r);
+        assert_eq!(returned.borrow().len(), 0, "the response is only half read, so the connection is closed");
+    }
+
+    // ---- the whole exchange
+
+    fn plain_url() -> Url {
+        Url::parse("http://example.onion/page").unwrap()
+    }
+
+    fn get(stream: BoxedConn, release: Option<ReleaseFn>) -> Result<FetchHeadersResult, JsTorError> {
+        block_on(fetch_headers(
+            stream,
+            &plain_url(),
+            Method::GET,
+            HashMap::new(),
+            RequestBody::None,
+            false,
+            "example.onion",
+            None,
+            release,
+        ))
+    }
+
+    #[test]
+    fn a_second_request_goes_out_on_the_connection_the_first_one_gave_back() {
+        let (c, written) = conn([
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi",
+            "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nyes",
+        ]);
+        let (release, returned) = recording_release();
+        let first = get(c, Some(release)).unwrap();
+        assert_eq!(body_of(first.body_reader).unwrap(), b"hi");
+        let (c, _) = returned.borrow_mut().pop().expect("the connection came back");
+
+        let (release, returned2) = recording_release();
+        let second = get(c, Some(release)).unwrap();
+        assert_eq!(body_of(second.body_reader).unwrap(), b"yes");
+        assert_eq!(returned2.borrow().len(), 1, "and it can go round again");
+
+        let wire = String::from_utf8(written.borrow().clone()).unwrap();
+        assert_eq!(wire.matches("GET /page HTTP/1.1\r\n").count(), 2, "{wire}");
+        assert!(wire.contains("Connection: keep-alive\r\n"), "{wire}");
+        assert!(!wire.contains("Connection: close"), "{wire}");
+    }
+
+    #[test]
+    fn the_server_s_announced_idle_time_is_passed_on() {
+        let (c, _) = conn(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\nKeep-Alive: timeout=5, max=100\r\n\r\nhi"]);
+        let (release, returned) = recording_release();
+        let r = get(c, Some(release)).unwrap();
+        body_of(r.body_reader).unwrap();
+        assert_eq!(returned.borrow()[0].1, Some(5));
+    }
+
+    #[test]
+    fn a_response_that_says_close_is_not_kept() {
+        for head in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: Keep-Alive, Close\r\n\r\nhi",
+            "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nhi",
+            "HTTP/1.1 200 OK\r\n\r\nhi",
+        ] {
+            let (c, _) = conn([head]);
+            let (release, returned) = recording_release();
+            let r = get(c, Some(release)).unwrap();
+            body_of(r.body_reader).unwrap();
+            assert_eq!(returned.borrow().len(), 0, "{head:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_kept_unless_the_caller_asked_for_it() {
+        let (c, written) = conn(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"]);
+        let r = get(c, None).unwrap();
+        assert_eq!(body_of(r.body_reader).unwrap(), b"hi");
+        assert!(String::from_utf8(written.borrow().clone()).unwrap().contains("Connection: close\r\n"));
+    }
+
+    #[test]
+    fn a_request_that_may_not_be_sent_twice_is_not_kept() {
+        let u = plain_url();
+        let none = HashMap::new();
+        assert!(wants_keep_alive(&u, &Method::GET, &none, &RequestBody::None));
+        assert!(wants_keep_alive(&u, &Method::HEAD, &none, &RequestBody::None));
+        assert!(!wants_keep_alive(&u, &Method::POST, &none, &RequestBody::None));
+        assert!(!wants_keep_alive(&u, &Method::GET, &none, &RequestBody::Bytes(b"x".to_vec())));
+        assert!(!wants_keep_alive(&Url::parse("https://example.com/").unwrap(), &Method::GET, &none, &RequestBody::None));
+        let own: HashMap<String, String> = [("connection".to_string(), "close".to_string())].into();
+        assert!(!wants_keep_alive(&u, &Method::GET, &own, &RequestBody::None), "the caller's own Connection header wins");
+    }
+
+    #[test]
+    fn keep_alive_request_head_asks_for_it() {
+        let h = String::from_utf8(
+            build_request_head(&plain_url(), &Method::GET, &HashMap::new(), &RequestBody::None, true).unwrap(),
+        )
+        .unwrap();
+        assert!(h.contains("Connection: keep-alive\r\n") && !h.contains("Connection: close"), "{h}");
+    }
+
+    #[test]
+    fn keep_alive_timeout_is_read_from_the_header() {
+        let h = |v: &str| vec![("keep-alive".to_string(), v.to_string())];
+        assert_eq!(keep_alive_timeout(&h("timeout=5, max=100")), Some(5));
+        assert_eq!(keep_alive_timeout(&h("max=100,timeout=30")), Some(30));
+        assert_eq!(keep_alive_timeout(&h("max=100")), None);
+        assert_eq!(keep_alive_timeout(&h("timeout=soon")), None);
+        assert_eq!(keep_alive_timeout(&[]), None);
     }
 }
