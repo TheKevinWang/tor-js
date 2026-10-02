@@ -13,6 +13,7 @@ before(async () => {
 })
 
 const enc = new TextEncoder()
+const dec = new TextDecoder()
 const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms))
 
 function streamOf(chunks) {
@@ -193,6 +194,63 @@ describe('site rpc', () => {
     assert.deepEqual(hooks.statuses, [{ state: 'ready', where: 'host' }])
     assert.deepEqual(hooks.logs, [['info', 'hello']])
     close()
+  })
+
+  test('a host that never answers fails the request instead of hanging it', async () => {
+    const ch = new MessageChannel() // nobody serves the other end: a terminated host
+    let dead = false
+    const client = new m.PortBackend(ch.port2, { onDead: () => { dead = true } }, 100)
+    await assert.rejects(client.handle(get('https://s/x')), /stopped responding/)
+    assert.equal(dead, true, 'the owner is told, so it can drop this host')
+    ch.port1.close()
+  })
+
+  test('a host that dies in the middle of a body errors the stream', async () => {
+    const ch = new MessageChannel()
+    let sent = false
+    let finishBody
+    const body = new ReadableStream({
+      pull(c) {
+        if (!sent) { sent = true; c.enqueue(enc.encode('first part')); return }
+        return new Promise((resolve) => { finishBody = () => { c.close(); resolve() } })
+      },
+    })
+    const server = m.serveBackend(ch.port1, { handle: async () => ({ status: 200, statusText: '', headers: [], body }), warm: async () => {} }, 1e9)
+    const client = new m.PortBackend(ch.port2, {}, 100)
+    const res = await client.handle(get('https://s/x'))
+    const reader = res.body.getReader()
+    assert.equal(dec.decode((await reader.read()).value), 'first part')
+    ch.port1.close() // the host goes away: no more chunks, no end, no error message
+    await assert.rejects(reader.read(), /stopped responding/)
+    finishBody() // let the fake upstream end so the host's heartbeat timer stops
+    await tick(20)
+    ch.port2.close()
+    void server
+  })
+
+  test('a slow but alive host is not mistaken for a dead one: it sends heartbeats while requests are in flight', async () => {
+    const ch = new MessageChannel()
+    const backend = {
+      handle: async () => { await tick(400); return { status: 200, statusText: '', headers: [], body: streamOf(['late']) } },
+      warm: async () => {},
+    }
+    m.serveBackend(ch.port1, backend, 30)
+    const client = new m.PortBackend(ch.port2, {}, 150)
+    const res = await client.handle(get('https://s/slow')) // takes 400 ms, silence limit 150 ms
+    assert.equal(await text(res), 'late')
+    ch.port1.close()
+    ch.port2.close()
+  })
+
+  test('an idle host is silent: no timers keep it running', async () => {
+    const ch = new MessageChannel()
+    const seen = []
+    ch.port2.onmessage = (e) => seen.push(e.data.t)
+    m.serveBackend(ch.port1, { handle: async () => ({ status: 204, statusText: '', headers: [], body: null }), warm: async () => {} }, 20)
+    await tick(120)
+    assert.deepEqual(seen, [], 'no heartbeats without requests')
+    ch.port1.close()
+    ch.port2.close()
   })
 
   test('closing rejects requests still waiting', async () => {

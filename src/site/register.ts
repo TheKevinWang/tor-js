@@ -47,6 +47,9 @@ export interface TorSite {
   unregister(): Promise<boolean>;
 }
 
+/** How often a page pings the Service Worker when Tor lives there (the browser's idle limit is ~30 s). */
+const KEEPALIVE_MS = 20_000;
+
 export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSite> {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
     throw new Error('tor-site: Service Workers are not available in this browser (they need https:// or localhost)');
@@ -92,6 +95,11 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
   if (opts.prewarm !== false) {
     if (host) host.warm();
     else active?.postMessage({ type: 'tor-site-warm' });
+  }
+  // With Tor inside the Service Worker, an idle worker is stopped by the browser
+  // after ~30 s and its Tor client goes with it. Any message resets that timer.
+  if (!wantHost) {
+    setInterval(() => navigator.serviceWorker.controller?.postMessage({ type: 'tor-site-ping' }), KEEPALIVE_MS);
   }
 
   return {

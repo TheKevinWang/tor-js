@@ -16,6 +16,7 @@ import { parseManifest, type SiteManifest } from './manifest.js';
 import { SiteRouter } from './router.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { PortBackend } from './rpc.js';
+import { injectIntoHtml, pageScriptTag, shouldInject } from './inject.js';
 import { errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
 
 declare const self: ServiceWorkerGlobalScope;
@@ -30,6 +31,8 @@ interface Loaded {
   router: SiteRouter;
   /** A Tor client inside this worker: used when no host is attached, or when the manifest asks for it. */
   local: LocalBackend;
+  /** The `<script>` tag inserted into HTML documents served from the onion, or null when injection is off. */
+  injectTag: string | null;
 }
 
 /** Tor hosts (persistent workers) that pages have attached, oldest first. */
@@ -54,7 +57,18 @@ function load(): Promise<Loaded> {
       onStatus: publishStatus,
       onLog: publishLog,
     });
-    return { manifest, router, local };
+    const rel = (u: string | URL) => {
+      const url = new URL(u, manifestUrl);
+      return url.pathname + url.search;
+    };
+    const injectTag = manifest.client.inject === false
+      ? null
+      : pageScriptTag({
+          script: rel(manifest.client.pageScript ?? 'tor-site.js'),
+          sw: rel(self.location.href),
+          manifest: rel(manifestUrl),
+        });
+    return { manifest, router, local, injectTag };
   })();
   loading = attempt.then(
     (v) => (loaded = v),
@@ -99,6 +113,8 @@ self.addEventListener('message', (event) => {
     // while Tor connects; without it the browser stops an idle worker after
     // ~30 s and the connection attempt is lost.
     event.waitUntil(load().then((l) => l.local.warm()).catch(reportLoadError));
+  } else if (data.type === 'tor-site-ping') {
+    // Nothing to do: delivering the message is what resets the browser's idle timer.
   } else if (data.type === 'tor-site-host') {
     const port = (data as { port?: MessagePort }).port;
     if (port) attachHost(port);
@@ -106,7 +122,18 @@ self.addEventListener('message', (event) => {
 });
 
 function attachHost(port: MessagePort): void {
-  hosts.push(new PortBackend(port, { onStatus: publishStatus, onLog: publishLog }));
+  const host: PortBackend = new PortBackend(port, {
+    onStatus: publishStatus,
+    onLog: publishLog,
+    // It stopped answering with requests waiting (its worker was terminated, as
+    // happens when the last page connected to it navigates away): forget it.
+    onDead: () => {
+      const i = hosts.indexOf(host);
+      if (i >= 0) hosts.splice(i, 1);
+      publishLog('warn', '[sw] the Tor host stopped responding and was dropped');
+    },
+  });
+  hosts.push(host);
   // Old attachments are for hosts that may be gone; keep a few, newest last.
   while (hosts.length > 4) hosts.shift()!.close();
   hostArrived?.();
@@ -123,13 +150,31 @@ async function liveHost(): Promise<PortBackend | null> {
   return null;
 }
 
+let warnedAboutNavigation = false;
+
 /**
  * Where a Tor request is served: the persistent host when one is attached and
  * alive; else, if pages are open, ask them to attach one (this worker may have
  * just restarted and forgotten its ports); else Tor inside this worker.
+ *
+ * Navigations always use Tor inside this worker. A navigation unloads the page
+ * that is connected to the host, and the browser terminates a worker host when
+ * its last page goes away, so a response streaming from it would be cut off
+ * (and the Tor client lost). Only pages that stay (fetch calls, subresources)
+ * can use the host.
  */
-async function pickBackend(l: Loaded): Promise<SiteBackend> {
+async function pickBackend(l: Loaded, request: Request): Promise<SiteBackend> {
   if (l.manifest.client.host === 'service-worker') return l.local;
+  if (request.destination === 'document') {
+    if (!warnedAboutNavigation) {
+      warnedAboutNavigation = true;
+      publishLog(
+        'warn',
+        '[sw] a page was served over Tor, so this looks like a server-rendered (multi-page) site: set "client": { "host": "service-worker" } in tor-site.json so that Tor is not started twice',
+      );
+    }
+    return l.local;
+  }
   let host = await liveHost();
   if (!host) {
     const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -195,15 +240,28 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
       redirect: request.redirect,
       signal: request.signal,
     };
-    const backend = await pickBackend(l);
-    const response = await backend.handle(siteRequest);
-    return toResponse(response, event);
+    const path = new URL(request.url).pathname;
+    request.signal.addEventListener('abort', () => publishLog('warn', `[sw] the browser aborted ${request.method} ${path}`), { once: true });
+    const backend = await pickBackend(l, request);
+    let response: SiteResponse;
+    try {
+      response = await backend.handle(siteRequest);
+    } catch (e) {
+      // A host that died before it answered: a safe request can simply be asked
+      // of the Tor client in this worker instead.
+      const safe = request.method === 'GET' || request.method === 'HEAD';
+      if (backend === l.local || !safe || request.signal.aborted) throw e;
+      publishLog('warn', `[sw] ${path}: the host failed (${e instanceof Error ? e.message : String(e)}); retrying with Tor in the Service Worker`);
+      response = await l.local.handle(siteRequest);
+    }
+    publishLog('debug', `[sw] ${request.method} ${path} -> ${response.status}${request.mode === 'navigate' ? ' (navigation)' : ''}`);
+    return toResponse(response, event, `${request.method} ${path}`, request.destination === 'document' ? l.injectTag : null);
   } catch (e) {
     return toResponse(errorResponse(502, `tor-site: ${e instanceof Error ? e.message : String(e)}`), event);
   }
 }
 
-function toResponse(r: SiteResponse, event: FetchEvent): Response {
+function toResponse(r: SiteResponse, event: FetchEvent, label = '', injectTag: string | null = null): Response {
   const headers = new Headers();
   for (const [k, v] of r.headers) {
     try {
@@ -215,17 +273,22 @@ function toResponse(r: SiteResponse, event: FetchEvent): Response {
   // Lets a page (and the demo) tell a Tor-served response from a static one.
   headers.set('x-tor-site', 'tor');
   let body = r.body;
+  if (body && injectTag && shouldInject('document', headers.get('content-type') ?? undefined)) {
+    body = body.pipeThrough(injectIntoHtml(injectTag));
+    headers.delete('content-length'); // the length changes
+  }
   if (body) {
     // Keep the worker alive until the body has been delivered.
     let finish!: () => void;
     event.waitUntil(new Promise<void>((resolve) => (finish = resolve)));
-    body = withCompletion(body, finish);
+    body = withCompletion(body, finish, label);
   }
   return new Response(body, { status: r.status, statusText: r.statusText, headers });
 }
 
-function withCompletion(body: ReadableStream<Uint8Array>, onDone: () => void): ReadableStream<Uint8Array> {
+function withCompletion(body: ReadableStream<Uint8Array>, onDone: () => void, label: string): ReadableStream<Uint8Array> {
   const reader = body.getReader();
+  let bytes = 0;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
@@ -233,16 +296,20 @@ function withCompletion(body: ReadableStream<Uint8Array>, onDone: () => void): R
         if (done) {
           controller.close();
           onDone();
+          publishLog('debug', `[sw] ${label}: body complete, ${bytes} bytes`);
         } else {
+          bytes += value.byteLength;
           controller.enqueue(value);
         }
       } catch (e) {
         controller.error(e);
         onDone();
+        publishLog('warn', `[sw] ${label}: body failed after ${bytes} bytes: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
     cancel(reason) {
       onDone();
+      publishLog('warn', `[sw] ${label}: the browser cancelled the body after ${bytes} bytes (${String(reason)})`);
       return reader.cancel(reason);
     },
   });

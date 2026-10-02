@@ -35,8 +35,22 @@ export interface ClientOptions {
   bootstrapUrl?: string;
   /** URL (relative to the manifest) of tor_js_bg.wasm, for bundles that do not embed it. */
   wasmUrl?: string;
-  /** Where the Tor client lives: a persistent worker when a page is open (default), or inside the Service Worker only. */
+  /**
+   * Where the Tor client lives: `"auto"` (default) is a persistent worker that
+   * pages attach the Service Worker to, which suits single-page apps, whose page
+   * never unloads; `"service-worker"` keeps it inside the Service Worker, which
+   * suits server-rendered multi-page sites, because a worker host is terminated
+   * whenever the last page connected to it navigates away.
+   */
   host?: 'auto' | 'service-worker';
+  /**
+   * Insert the page script (`tor-site.js`) into HTML documents served from the
+   * onion, so that they keep the Service Worker alive and can report state.
+   * Default true.
+   */
+  inject?: boolean;
+  /** URL (relative to the manifest) of the page script that `inject` inserts. Default `tor-site.js`. */
+  pageScript?: string;
 }
 
 export interface SiteManifest {
@@ -45,6 +59,15 @@ export interface SiteManifest {
   staticRules: RegExp[];
   torRules: TorRule[];
   client: ClientOptions;
+  /**
+   * The backend generates URLs (redirects, links) that already include the
+   * path the site is hosted under, e.g. `/repo/login` for a GitHub project page
+   * at https://user.github.io/repo/, because it was told its public prefix
+   * (Flask `SCRIPT_NAME`, Django `FORCE_SCRIPT_NAME`, a base-URL setting).
+   * Redirect `Location` values are then already site URLs and are not prefixed
+   * again. Default false: the backend is unaware that it is mounted.
+   */
+  backendKnowsBase: boolean;
 }
 
 export type Route =
@@ -103,7 +126,10 @@ export function parseManifest(raw: unknown, opts: ParseOptions = {}): SiteManife
   });
 
   const client = parseClient(m.client);
-  return { onions: [...onions], staticRules, torRules, client };
+  if (m.backendKnowsBase !== undefined && typeof m.backendKnowsBase !== 'boolean') {
+    throw new Error('tor-site manifest: "backendKnowsBase" must be true or false');
+  }
+  return { onions: [...onions], staticRules, torRules, client, backendKnowsBase: m.backendKnowsBase === true };
 }
 
 function asList(v: unknown, what: string): unknown[] {
@@ -152,7 +178,11 @@ function parseClient(v: unknown): ClientOptions {
     }
     out.snowflake = c.snowflake;
   }
-  for (const key of ['bootstrapUrl', 'wasmUrl'] as const) {
+  if (c.inject !== undefined) {
+    if (typeof c.inject !== 'boolean') throw new Error('tor-site manifest: "client.inject" must be true or false');
+    out.inject = c.inject;
+  }
+  for (const key of ['bootstrapUrl', 'wasmUrl', 'pageScript'] as const) {
     if (c[key] !== undefined) {
       if (typeof c[key] !== 'string') throw new Error(`tor-site manifest: "client.${key}" must be a string`);
       out[key] = c[key] as string;

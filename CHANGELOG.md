@@ -16,6 +16,17 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Multi-page (server-rendered) sites in the site adapter.** Found by running a
+  real forum (`examples/flaskbb-demo/`): `"client": { "host": "service-worker" }`
+  keeps the Tor client in the Service Worker, which survives navigation (a
+  SharedWorker host does not); HTML pages served from the onion get the adapter's
+  page script inserted (`"client": { "inject": false }` opts out), which keeps the
+  Service Worker alive with a 20 s ping; navigations served over Tor always use
+  the Service Worker's client, even in the default mode; a worker host that goes
+  silent with requests in flight fails them after ~20 s and safe requests are
+  retried on the Service Worker's client; `"backendKnowsBase": true` for backends
+  that were told the path the site is hosted under (GitHub project pages);
+  `"client.pageScript"` names the script that is inserted.
 - **WebRTC Snowflake in the site adapter.** `"client": { "snowflake": "webrtc" }`
   in `tor-site.json`: a page of the site hosts the `RTCPeerConnection` (workers
   have none) and relays the data channel to the Tor client in the host worker;

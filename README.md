@@ -271,12 +271,30 @@ What the adapter does for you:
   (`Strict-Transport-Security`, `Clear-Site-Data`, `Alt-Svc`) are dropped. Every
   visitor sends the same Tor Browser-style `User-Agent` rather than the real
   browser's.
-- **Tor lives in a persistent worker** (a SharedWorker, one per site, shared by
-  all tabs; a dedicated Worker where SharedWorker does not exist), not in the
-  Service Worker, which browsers stop after ~30 s of idleness. The Service
-  Worker only routes. If no page of the site is open (someone types a Tor path
-  into a new tab) it runs Tor itself for that request. `"client": { "host":
-  "service-worker" }` forces that mode.
+- **Where Tor runs depends on the kind of site.** For a single-page app (the
+  page never unloads) the default puts the Tor client in a persistent worker (a
+  SharedWorker, one per site, shared by all tabs; a dedicated Worker where
+  SharedWorker does not exist), because browsers stop an idle Service Worker
+  after ~30 s and its thread stalls while the client works. A **server-rendered,
+  multi-page site must set `"client": { "host": "service-worker" }`**: every
+  click is a navigation, and a SharedWorker is terminated when the last page
+  connected to it navigates away, taking the Tor client with it. In that mode
+  the adapter keeps the Service Worker alive for you: it inserts its small page
+  script into every HTML page served from the onion (`"client": { "inject":
+  false }` turns that off), and the script pings the worker every 20 s. Even in
+  the default mode, a navigation served over Tor always uses the Tor client in
+  the Service Worker, for the same reason, and the adapter logs a warning
+  suggesting `"service-worker"`. If a worker host dies with requests in flight
+  they fail after ~20 s of silence, and safe (GET/HEAD) ones are retried on the
+  Service Worker's client.
+- **Project pages.** A site at `https://user.github.io/repo/` has the Service
+  Worker scope `/repo/`, and patterns are relative to it. Tell the backend its
+  public prefix (Flask `SCRIPT_NAME`, Django `FORCE_SCRIPT_NAME`, a base-URL
+  setting) so the links and redirects it generates stay under `/repo/`, and set
+  `"backendKnowsBase": true` in the manifest so such redirects are not prefixed
+  again. A backend that is unaware of the prefix needs neither (the adapter
+  prefixes its redirects), but then its absolute links in HTML point outside the
+  scope.
 
 Limits, all inherited from what a Service Worker can see: WebSockets and
 server-sent events to the backend are not supported; absolute URLs the
@@ -288,6 +306,17 @@ scope are seen (cross-origin iframes and third-party pages are not); uploads are
 buffered in memory. The onion address is public in the manifest: it is a
 routing table, not a secret. Anyone who can run script on the static origin can
 use the adapter to reach the backend, exactly as they could use its cookies.
+
+### A worked example: a forum
+
+`examples/flaskbb-demo/` runs FlaskBB as an onion service behind a static host that
+imitates GitHub Pages (GET and HEAD only, `404.html`, no server code), root-hosted or
+as a project page, with a headless end-to-end check
+(`test/site-live-forum.mjs`: register, log in, post, reply, log out, over Tor). See
+its README. Things it taught that are now handled or documented: the manifest must
+list the adapter's own files as `static` when everything else goes to Tor; a first
+visit to any deep link needs a `404.html` shell; multi-page sites need `"host":
+"service-worker"`.
 
 ### WebRTC carrier in the site adapter
 

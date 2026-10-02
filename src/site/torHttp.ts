@@ -177,8 +177,12 @@ export class TorHttp {
       return value;
     }
     if (!isAllowedOnion(this.opts.manifest, u.origin)) return value; // leaves the backend: not ours to rewrite
-    const visible = visiblePathFor(this.opts.manifest, u.origin, u.pathname, rule) ?? u.pathname;
     const prefix = this.scopePath.slice(0, -1);
+    if (this.opts.manifest.backendKnowsBase && prefix && (u.pathname === prefix || u.pathname.startsWith(prefix + '/'))) {
+      // The backend was told where the site lives, so this is already a site path.
+      return this.visibleOrigin + u.pathname + u.search + u.hash;
+    }
+    const visible = visiblePathFor(this.opts.manifest, u.origin, u.pathname, rule) ?? u.pathname;
     return this.visibleOrigin + prefix + visible + u.search + u.hash;
   }
 }

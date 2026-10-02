@@ -36,20 +36,26 @@ type FromHost =
   | { t: 'err'; id: number; message: string }
   | { t: 'warmed'; id: number }
   | { t: 'pong'; id: number }
+  | { t: 'hb' }
   | { t: 'status'; status: SiteStatus }
   | { t: 'log'; level: string; message: string };
 
 /** Host side: answer requests arriving on `port` from `backend`. */
-export function serveBackend(port: MessagePort, backend: SiteBackend): {
+export function serveBackend(port: MessagePort, backend: SiteBackend, heartbeatMs: number = HEARTBEAT_MS): {
   /** Send a status or log line to the other end of the port. */
   push(msg: Extract<FromHost, { t: 'status' | 'log' }>): void;
 } {
   const inflight = new Map<number, AbortController>();
   const send = (msg: FromHost, transfer?: Transferable[]) => port.postMessage(msg, transfer ?? []);
+  // While requests are in flight the other end needs to be able to tell a busy
+  // host from a dead one (the browser terminates a SharedWorker when its last
+  // page goes away), so say so every few seconds. Idle: silent, no timer.
+  let beat: ReturnType<typeof setInterval> | null = null;
 
   async function serve(id: number, req: WireRequest): Promise<void> {
     const ac = new AbortController();
     inflight.set(id, ac);
+    beat ??= setInterval(() => send({ t: 'hb' }), heartbeatMs);
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       const res = await backend.handle({ ...req, signal: ac.signal });
@@ -73,6 +79,10 @@ export function serveBackend(port: MessagePort, backend: SiteBackend): {
       if (!ac.signal.aborted) send({ t: 'err', id, message: e instanceof Error ? e.message : String(e) });
     } finally {
       inflight.delete(id);
+      if (inflight.size === 0 && beat) {
+        clearInterval(beat);
+        beat = null;
+      }
     }
   }
 
@@ -108,7 +118,14 @@ interface Pending {
 export interface PortBackendHooks {
   onStatus?(status: SiteStatus): void;
   onLog?(level: string, message: string): void;
+  /** The host stopped answering while requests were waiting; the backend has closed itself. */
+  onDead?(): void;
 }
+
+/** How often a host with requests in flight says it is alive. */
+export const HEARTBEAT_MS = 5_000;
+/** How long a host with requests in flight may be silent before it counts as dead. */
+export const SILENCE_MS = 20_000;
 
 /** Service Worker side: a {@link SiteBackend} that forwards over a port to a host. */
 export class PortBackend implements SiteBackend {
@@ -117,10 +134,12 @@ export class PortBackend implements SiteBackend {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly waiters = new Map<number, () => void>();
+  private watchdog: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly port: MessagePort,
     private readonly hooks: PortBackendHooks = {},
+    private readonly silenceMs: number = SILENCE_MS,
   ) {
     port.onmessage = (event: MessageEvent) => this.onMessage(event.data as FromHost);
     port.start?.();
@@ -142,7 +161,26 @@ export class PortBackend implements SiteBackend {
       }
       const transfer: Transferable[] = wire.body ? [wire.body.buffer as ArrayBuffer] : [];
       this.port.postMessage({ t: 'req', id, req: wire } satisfies ToHost, transfer);
+      this.watch();
     });
+  }
+
+  /**
+   * While requests wait, a host that has gone quiet is presumed dead: a
+   * SharedWorker is terminated when the last page connected to it goes away,
+   * and then nothing would ever complete (or fail) the requests it was serving.
+   */
+  private watch(): void {
+    if (this.watchdog) return;
+    this.watchdog = setInterval(() => {
+      if (this.pending.size === 0) {
+        clearInterval(this.watchdog!);
+        this.watchdog = null;
+      } else if (Date.now() - this.lastSeen > this.silenceMs) {
+        this.close(new Error('The Tor host stopped responding'));
+        this.hooks.onDead?.();
+      }
+    }, Math.max(10, Math.floor(this.silenceMs / 4)));
   }
 
   warm(): Promise<void> {
@@ -169,10 +207,12 @@ export class PortBackend implements SiteBackend {
     });
   }
 
-  close(): void {
+  close(reason: Error = new Error('The Tor host went away')): void {
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = null;
     this.port.onmessage = null;
     this.port.close();
-    for (const id of [...this.pending.keys()]) this.fail(id, new Error('The Tor host went away'));
+    for (const id of [...this.pending.keys()]) this.fail(id, reason);
   }
 
   private onMessage(msg: FromHost): void {

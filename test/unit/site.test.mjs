@@ -103,6 +103,20 @@ describe('manifest routing', () => {
     assert.equal(parse({ client: { snowflake: 'websocket', host: 'service-worker' } }).client.host, 'service-worker')
   })
 
+  test('client.inject and client.pageScript', () => {
+    assert.equal(parse({}).client.inject, undefined, 'unset means on (the Service Worker applies the default)')
+    assert.equal(parse({ client: { inject: false } }).client.inject, false)
+    assert.equal(parse({ client: { pageScript: 'js/tor-site.js' } }).client.pageScript, 'js/tor-site.js')
+    assert.throws(() => parse({ client: { inject: 'yes' } }), /"client.inject" must be true or false/)
+    assert.throws(() => parse({ client: { pageScript: 3 } }), /pageScript/)
+  })
+
+  test('backendKnowsBase is a boolean that defaults to false', () => {
+    assert.equal(parse({}).backendKnowsBase, false)
+    assert.equal(parse({ backendKnowsBase: true }).backendKnowsBase, true)
+    assert.throws(() => parse({ backendKnowsBase: 'yes' }), /backendKnowsBase/)
+  })
+
   test('client defaults to Snowflake over WebSocket with a persistent host', () => {
     assert.deepEqual(parse({}).client, { snowflake: true, host: 'auto' })
   })
@@ -220,6 +234,10 @@ describe('TorHttp', () => {
         }
         if (path === '/schemeup') {
           res.writeHead(301, { location: `https://${req.headers.host}/api/home` })
+          return res.end()
+        }
+        if (path === '/knows') {
+          res.writeHead(302, { location: '/repo/api/home' })
           return res.end()
         }
         if (path === '/external') {
@@ -361,6 +379,23 @@ describe('TorHttp', () => {
     const { torHttp } = make()
     const r = await torHttp.handle(req(`${VISIBLE}/api/schemeup`))
     assert.equal(header(r, 'location'), `${VISIBLE}/api/home`)
+  })
+
+  test('a backend that knows the site base path gets no second prefix; an unaware one does', async () => {
+    const mk = (extra) => {
+      const manifest = m.parseManifest({ onion: origin, tor: ['/api/**'], ...extra }, { allowAnyHost: true })
+      return new m.TorHttp({ manifest, visibleOrigin: VISIBLE, scopePath: '/repo/', fetch: rawFetch, jar: new m.CookieJar() })
+    }
+    const aware = await mk({ backendKnowsBase: true }).handle(req(`${VISIBLE}/repo/api/knows`))
+    assert.equal(header(aware, 'location'), `${VISIBLE}/repo/api/home`)
+    const unaware = await mk({}).handle(req(`${VISIBLE}/repo/api/knows`))
+    assert.equal(header(unaware, 'location'), `${VISIBLE}/repo/repo/api/home`, 'what an aware backend would get without the flag')
+    // A path outside the prefix still falls back to the unaware mapping, and root hosting is unaffected.
+    const root = new m.TorHttp({
+      manifest: m.parseManifest({ onion: origin, tor: ['/api/**'], backendKnowsBase: true }, { allowAnyHost: true }),
+      visibleOrigin: VISIBLE, scopePath: '/', fetch: rawFetch, jar: new m.CookieJar(),
+    })
+    assert.equal(header(await root.handle(req(`${VISIBLE}/api/login`)), 'location'), `${VISIBLE}/api/home`)
   })
 
   test('a redirect to another host is passed through unchanged', async () => {
