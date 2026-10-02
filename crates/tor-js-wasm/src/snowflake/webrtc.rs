@@ -41,9 +41,12 @@ const DATA_CHANNEL_TIMEOUT_MS: u32 = 10_000;
 /// Proxies asked for before a dial gives up: the broker often has none for a
 /// poll or two, and a matched proxy is often unreachable.
 const MAX_ATTEMPTS: u32 = 10;
-/// The least time between the starts of two attempts (the official client's
-/// `ReconnectTimeout`).
-const ATTEMPT_INTERVAL: Duration = Duration::from_secs(10);
+/// The least time between the starts of two attempts. The official client uses
+/// 10 s (`ReconnectTimeout`), which suits a client that retries forever in the
+/// background; here a person is waiting, an attempt that fails quickly (a proxy
+/// that did not answer) should be replaced quickly, and the broker is only
+/// asked once per attempt.
+const ATTEMPT_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct WebRtcConfig {

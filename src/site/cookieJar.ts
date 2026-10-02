@@ -125,7 +125,7 @@ export class CookieJar {
     if (!this.store || this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      this.flush().catch(() => {});
+      this.flush().catch((e) => console.warn('[tor-site] could not save cookies:', e));
     }, 50);
   }
 
@@ -227,8 +227,15 @@ export function parseSetCookie(header: string, u: URL, now: number): StoredCooki
   return cookie;
 }
 
+/**
+ * The jar's IndexedDB database. It must not be `tor-site`: the Tor client's own
+ * storage already owns a database of that name, with a different object store,
+ * so a `kv` store could never be created in it and every save failed.
+ */
+export const COOKIE_DB = 'tor-site-cookies';
+
 /** A store backed by one IndexedDB record; the default in workers and pages. */
-export function indexedDbCookieStore(dbName = 'tor-site'): CookieStore | undefined {
+export function indexedDbCookieStore(dbName = COOKIE_DB): CookieStore | undefined {
   if (typeof indexedDB === 'undefined') return undefined;
   const open = (): Promise<IDBDatabase> =>
     new Promise((resolve, reject) => {

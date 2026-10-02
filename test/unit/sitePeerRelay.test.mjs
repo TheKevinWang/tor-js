@@ -44,12 +44,16 @@ class FakePeerConnection extends EventTarget {
   static last = null
   static noCandidates = false
   static neverOpen = false
+  static neverComplete = false // gathering never reports "complete" (an unreachable STUN server keeps it open)
+  static srflxAfterMs = null // a server-reflexive candidate event this long after the offer
+  static created = 0
   iceGatheringState = 'new'
   localDescription = null
   remote = null
   closed = false
   constructor(config) {
     super()
+    FakePeerConnection.created++
     this.config = config
     this.dc = new FakeDataChannel()
     FakePeerConnection.last = this
@@ -59,10 +63,19 @@ class FakePeerConnection extends EventTarget {
   async setLocalDescription(d) {
     const sdp = FakePeerConnection.noCandidates ? d.sdp : d.sdp + '\r\na=candidate:1 1 UDP 1 192.0.2.1 9 typ host'
     this.localDescription = { type: d.type, sdp }
-    setTimeout(() => {
-      this.iceGatheringState = 'complete'
-      this.dispatchEvent(new Event('icegatheringstatechange'))
-    }, 1)
+    if (FakePeerConnection.srflxAfterMs !== null) {
+      setTimeout(() => {
+        const ev = new Event('icecandidate')
+        ev.candidate = { candidate: 'candidate:2 1 UDP 1 203.0.113.9 9 typ srflx raddr 0.0.0.0 rport 0' }
+        this.dispatchEvent(ev)
+      }, FakePeerConnection.srflxAfterMs)
+    }
+    if (!FakePeerConnection.neverComplete) {
+      setTimeout(() => {
+        this.iceGatheringState = 'complete'
+        this.dispatchEvent(new Event('icegatheringstatechange'))
+      }, 1)
+    }
   }
   async setRemoteDescription(d) {
     this.remote = d
@@ -75,6 +88,9 @@ beforeEach(() => {
   FakePeerConnection.last = null
   FakePeerConnection.noCandidates = false
   FakePeerConnection.neverOpen = false
+  FakePeerConnection.neverComplete = false
+  FakePeerConnection.srflxAfterMs = null
+  FakePeerConnection.created = 0
 })
 
 /** A page end and a worker-side factory joined by one channel. */
@@ -220,6 +236,108 @@ describe('peer relay', () => {
     // `null ??` falls through to the global, which Node does not have.
     const peer = await m.createRemotePeerFactory(async () => ch.port1)()
     await assert.rejects(peer.offer(['stun:x:1']), /RTCPeerConnection is not available/)
+  })
+})
+
+describe('ICE gathering', () => {
+  const STUN = ['stun:a.example:3478']
+
+  test('the offer is sent shortly after the first server-reflexive candidate, not when gathering completes', async () => {
+    FakePeerConnection.neverComplete = true // as when one STUN server never answers
+    FakePeerConnection.srflxAfterMs = 30
+    const { factory } = joined({ gatherGraceMs: 40, gatherMaxMs: 5000 })
+    const peer = await factory()
+    const t0 = Date.now()
+    assert.match(await peer.offer(STUN), /a=candidate:/)
+    const took = Date.now() - t0
+    assert.ok(took >= 60 && took < 800, `took ${took} ms: first candidate at 30 ms plus 40 ms grace, far below the cap`)
+    peer.close()
+  })
+
+  test('without any server-reflexive candidate it waits for the cap and then uses what it has', async () => {
+    FakePeerConnection.neverComplete = true
+    const { factory } = joined({ gatherGraceMs: 40, gatherMaxMs: 150 })
+    const peer = await factory()
+    const t0 = Date.now()
+    assert.match(await peer.offer(STUN), /a=candidate:/)
+    assert.ok(Date.now() - t0 >= 140, 'waited for the cap')
+    peer.close()
+  })
+
+  test('a gathering that completes on its own is not delayed', async () => {
+    const { factory } = joined({ gatherGraceMs: 5000, gatherMaxMs: 5000 })
+    const peer = await factory()
+    const t0 = Date.now()
+    await peer.offer(STUN)
+    assert.ok(Date.now() - t0 < 500)
+    peer.close()
+  })
+})
+
+describe('the spare peer', () => {
+  const STUN = ['stun:a.example:3478', 'stun:b.example:3478']
+  const deps = { RTCPeerConnection: FakePeerConnection, gatherGraceMs: 20, gatherMaxMs: 1000 }
+
+  beforeEach(() => m.discardSpare()) // the spare is module state: start every test without one
+
+  async function offerThrough(stun, extra = {}) {
+    const ch = new MessageChannel()
+    m.servePeer(ch.port2, { ...deps, ...extra })
+    const peer = await m.createRemotePeerFactory(async () => ch.port1)()
+    const sdp = await peer.offer(stun)
+    return { peer, sdp }
+  }
+
+  test('a spare prepared ahead is used for the matching request, so no new connection is made', async () => {
+    m.prepareSpare(STUN, deps)
+    assert.equal(FakePeerConnection.created, 1)
+    await tick(30)
+    const { peer, sdp } = await offerThrough(STUN)
+    assert.match(sdp, /a=candidate:/)
+    assert.equal(FakePeerConnection.created, 1, 'the offer came from the spare')
+    assert.deepEqual(FakePeerConnection.last.config.iceServers, STUN.map((urls) => ({ urls })))
+    await peer.open('ANSWER')
+    peer.close()
+  })
+
+  test('the spare is used once: a second request makes a new connection', async () => {
+    m.prepareSpare(STUN, deps)
+    const a = await offerThrough(STUN)
+    const b = await offerThrough(STUN)
+    assert.equal(FakePeerConnection.created, 2)
+    a.peer.close()
+    b.peer.close()
+  })
+
+  test('a spare for different STUN servers is discarded and closed, and a fresh connection is made', async () => {
+    m.prepareSpare(STUN, deps)
+    const spare = FakePeerConnection.last
+    const { peer } = await offerThrough(['stun:other.example:3478'])
+    assert.equal(spare.closed, true)
+    assert.equal(FakePeerConnection.created, 2)
+    peer.close()
+  })
+
+  test('preparing twice keeps the first spare; discarding closes it', () => {
+    m.prepareSpare(STUN, deps)
+    const first = FakePeerConnection.last
+    m.prepareSpare(STUN, deps)
+    assert.equal(FakePeerConnection.created, 1)
+    m.discardSpare()
+    assert.equal(first.closed, true)
+    m.discardSpare() // harmless when there is none
+  })
+
+  test('a spare whose candidates have gone stale is not used', async (t) => {
+    let now = 1_000_000
+    t.mock.method(Date, 'now', () => now)
+    m.prepareSpare(STUN, deps)
+    const spare = FakePeerConnection.last
+    now += 25_000 // older than the 20 s limit
+    const { peer } = await offerThrough(STUN)
+    assert.equal(spare.closed, true, 'the stale spare was thrown away')
+    assert.equal(FakePeerConnection.created, 2)
+    peer.close()
   })
 })
 

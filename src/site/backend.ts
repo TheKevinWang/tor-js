@@ -12,6 +12,7 @@ import { TorClient } from '../TorClient.js';
 import type { RtcPeerFactory } from '../types.js';
 import { Log, type LogLevel } from '../Log.js';
 import { createAutoStorage } from '../storage/index.js';
+import { withSanitizedGuards } from './guardState.js';
 import { CookieJar, indexedDbCookieStore } from './cookieJar.js';
 import type { SiteManifest } from './manifest.js';
 import { TorHttp, errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
@@ -112,7 +113,8 @@ export class LocalBackend implements SiteBackend {
     const client = new TorClient({
       snowflake: manifest.client.snowflake ?? true,
       rtcPeerFactory: this.opts.peerFactory,
-      storage: createAutoStorage('tor-site'),
+      // The saved guard state is read without any 'disabled' mark: see guardState.ts.
+      storage: withSanitizedGuards(createAutoStorage('tor-site')),
       bootstrapUrl,
       logLevel: 'info',
       log: new Log({

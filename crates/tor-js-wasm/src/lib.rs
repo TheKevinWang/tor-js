@@ -457,6 +457,26 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         snowflake::set_peer_factory(factory);
     }
 
+    // Start the Snowflake session now, before storage is read: a WebRTC session
+    // needs a broker match and ICE, which take seconds, and reading the cached
+    // directory takes seconds of its own (2.2 s in a measured start). Doing them
+    // one after the other made the start-up their sum. The result is awaited
+    // below, before arti dials: its channel timeout (5s, handshake included) is
+    // shorter than a WebRTC broker match.
+    let session_warmup = if snowflakes.is_empty() {
+        None
+    } else {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let started = web_time_compat::Instant::now();
+        info!("Snowflake: opening a session (in parallel with storage initialisation)...");
+        let configs = snowflakes.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let results = futures::future::join_all(configs.into_iter().map(snowflake::warm)).await;
+            let _ = tx.send(results);
+        });
+        Some((rx, started))
+    };
+
     // 2. Create WASM runtime with JS connect function
     let mut runtime = WasmRuntime::default();
     runtime.set_connect_fn(options.connect);
@@ -494,21 +514,18 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
 
     info!("TorClient created (unbootstrapped)");
 
-    // Have the Snowflake session ready before arti dials: its channel timeout
-    // (5s, handshake included) is shorter than a WebRTC broker match.
-    if !snowflakes.is_empty() {
-        use futures::future::{join_all, select, Either};
-        let started = web_time_compat::Instant::now();
-        info!("Snowflake: opening a session before bootstrap...");
-        let warm = std::pin::pin!(join_all(snowflakes.into_iter().map(snowflake::warm)));
+    // Have the Snowflake session ready before arti dials (see above).
+    if let Some((rx, started)) = session_warmup {
+        use futures::future::{select, Either};
         let limit = std::pin::pin!(gloo_timers::future::TimeoutFuture::new(60_000));
-        match select(warm, limit).await {
-            Either::Left((results, _)) => {
+        match select(rx, limit).await {
+            Either::Left((Ok(results), _)) => {
                 for e in results.into_iter().filter_map(Result::err) {
                     tracing::warn!("Snowflake: could not open a session ahead of bootstrap: {e}");
                 }
                 info!("Snowflake: ready after {:.1}s", started.elapsed().as_secs_f64());
             }
+            Either::Left((Err(_), _)) => tracing::warn!("Snowflake: the session task ended without a result; bootstrapping anyway"),
             Either::Right(_) => tracing::warn!("Snowflake: no session after 60s; bootstrapping anyway"),
         }
     }

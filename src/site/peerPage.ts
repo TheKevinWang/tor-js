@@ -10,18 +10,98 @@ import { DEFAULT_SILENCE_MS, HEARTBEAT_MS } from './peerRelay.js';
 /** The page holds its credit until the data channel's send buffer is below this. */
 const BUFFER_HIGH = 1024 * 1024;
 const BUFFER_LOW = 256 * 1024;
-const ICE_GATHERING_TIMEOUT_MS = 10_000;
-const OPEN_TIMEOUT_MS = 10_000;
+/**
+ * ICE gathering "completes" only when every configured STUN server has answered
+ * or timed out, which in a measured cold start was the whole 10 s it was given.
+ * The offer only needs a candidate the proxy can reach, in practice a
+ * server-reflexive one, so gathering ends shortly after the first of those, and
+ * never later than the cap.
+ */
+const GATHER_GRACE_MS = 600;
+const GATHER_MAX_MS = 4_000;
+/** A proxy whose data channel has not opened by now is unreachable or too slow; ask for another. */
+const OPEN_TIMEOUT_MS = 6_000;
+/** A spare peer's candidates go stale (NAT bindings expire); older than this it is not used. */
+const SPARE_MAX_AGE_MS = 20_000;
 
 export interface PeerDeps {
   /** Override the global `RTCPeerConnection` (tests). */
   RTCPeerConnection?: typeof RTCPeerConnection;
   /** Override the timers' lengths (tests). */
-  iceGatheringTimeoutMs?: number;
+  gatherGraceMs?: number;
+  gatherMaxMs?: number;
   openTimeoutMs?: number;
   heartbeatMs?: number;
   /** How long the worker may be silent before the page gives up on it. */
   silenceMs?: number;
+}
+
+/** A peer connection with its data channel and an offer that is being (or has been) prepared. */
+interface Prepared {
+  pc: RTCPeerConnection;
+  dc: RTCDataChannel;
+  /** Resolves with the offer SDP once ICE gathering is useful; rejects if no candidate was found. */
+  sdp: Promise<string>;
+  key: string;
+  at: number;
+  Ctor: typeof RTCPeerConnection;
+}
+
+function prepare(
+  PC: typeof RTCPeerConnection,
+  stun: readonly string[],
+  deps: Pick<PeerDeps, 'gatherGraceMs' | 'gatherMaxMs'>,
+): Prepared {
+  const pc = new PC({ iceServers: stun.map((urls) => ({ urls })) });
+  const dc = pc.createDataChannel('snowflake');
+  dc.binaryType = 'arraybuffer';
+  const sdp = (async () => {
+    await pc.setLocalDescription(await pc.createOffer());
+    await gatherIce(pc, deps.gatherGraceMs ?? GATHER_GRACE_MS, deps.gatherMaxMs ?? GATHER_MAX_MS);
+    const text = pc.localDescription?.sdp ?? '';
+    if (!text.includes('a=candidate:')) throw new Error('WebRTC gathered no ICE candidates');
+    return text;
+  })();
+  sdp.catch(() => {}); // surfaced where the offer is used
+  return { pc, dc, sdp, key: stun.join(','), at: Date.now(), Ctor: PC };
+}
+
+let spare: Prepared | null = null;
+
+/**
+ * Start preparing a peer connection (create it, gather ICE candidates, build the
+ * offer) before anyone asks for one, so that the Tor client's request for an
+ * offer, which comes only after the WASM has loaded and storage has been read,
+ * is answered at once. Used once, only if the request names the same STUN
+ * servers and arrives while the candidates are fresh.
+ */
+export function prepareSpare(stunUrls: readonly string[], deps: PeerDeps = {}): void {
+  const PC = deps.RTCPeerConnection ?? (globalThis as { RTCPeerConnection?: typeof RTCPeerConnection }).RTCPeerConnection;
+  if (!PC || spare) return;
+  try {
+    spare = prepare(PC, stunUrls, deps);
+  } catch {
+    spare = null;
+  }
+}
+
+/** Close and forget the spare peer, if any. */
+export function discardSpare(): void {
+  const s = spare;
+  spare = null;
+  if (!s) return;
+  try { s.dc.close(); s.pc.close(); } catch { /* already closed */ }
+}
+
+function takeSpare(PC: typeof RTCPeerConnection, stun: readonly string[]): Prepared | null {
+  const s = spare;
+  spare = null;
+  if (!s) return null;
+  if (s.Ctor !== PC || s.key !== stun.join(',') || Date.now() - s.at > SPARE_MAX_AGE_MS) {
+    try { s.dc.close(); s.pc.close(); } catch { /* already closed */ }
+    return null;
+  }
+  return s;
 }
 
 /**
@@ -66,9 +146,9 @@ export function servePeer(port: MessagePort, deps: PeerDeps = {}): void {
 
   async function offer(stun: string[]): Promise<void> {
     if (!PC) throw new Error('RTCPeerConnection is not available in this page');
-    pc = new PC({ iceServers: stun.map((urls) => ({ urls })) });
-    dc = pc.createDataChannel('snowflake');
-    dc.binaryType = 'arraybuffer';
+    const prepared = takeSpare(PC, stun) ?? prepare(PC, stun, deps);
+    pc = prepared.pc;
+    dc = prepared.dc;
     dc.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) send({ t: 'data', data: e.data }, [e.data]);
     };
@@ -76,12 +156,7 @@ export function servePeer(port: MessagePort, deps: PeerDeps = {}): void {
       send({ t: 'closed' });
       teardown();
     };
-    const description = await pc.createOffer();
-    await pc.setLocalDescription(description);
-    await gatherIce(pc, deps.iceGatheringTimeoutMs ?? ICE_GATHERING_TIMEOUT_MS);
-    const sdp = pc.localDescription?.sdp ?? '';
-    if (!sdp.includes('a=candidate:')) throw new Error('WebRTC gathered no ICE candidates');
-    send({ t: 'offer-ok', sdp });
+    send({ t: 'offer-ok', sdp: await prepared.sdp });
   }
 
   async function answer(sdp: string): Promise<void> {
@@ -139,19 +214,28 @@ export function servePeer(port: MessagePort, deps: PeerDeps = {}): void {
   send({ t: 'ready' });
 }
 
-function gatherIce(pc: RTCPeerConnection, timeoutMs: number): Promise<void> {
+function gatherIce(pc: RTCPeerConnection, graceMs: number, maxMs: number): Promise<void> {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise<void>((resolve) => {
-    const timer = setTimeout(done, timeoutMs); // use the candidates gathered so far
+    let grace: ReturnType<typeof setTimeout> | null = null;
+    const cap = setTimeout(done, maxMs); // use the candidates gathered so far
     function done() {
-      clearTimeout(timer);
+      clearTimeout(cap);
+      if (grace) clearTimeout(grace);
       pc.removeEventListener('icegatheringstatechange', check);
+      pc.removeEventListener('icecandidate', onCandidate);
       resolve();
     }
     function check() {
       if (pc.iceGatheringState === 'complete') done();
     }
+    function onCandidate(e: RTCPeerConnectionIceEvent) {
+      // The first server-reflexive candidate is what a proxy behind another NAT
+      // can reach; a short grace lets a second STUN answer arrive, then go.
+      if (!grace && e.candidate && / typ srflx/.test(e.candidate.candidate)) grace = setTimeout(done, graceMs);
+    }
     pc.addEventListener('icegatheringstatechange', check);
+    pc.addEventListener('icecandidate', onCandidate);
   });
 }
 

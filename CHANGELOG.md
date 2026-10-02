@@ -16,6 +16,21 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Faster, steadier start-up for the WebRTC carrier.** Tor's saved guard state could
+  mark the only (Snowflake) bridge permanently `disabled` after a few slow or failed
+  runs, after which every page load sat silent without dialling it; the mark is now
+  dropped when the state is read. ICE gathering no longer waits for its 10 s limit
+  (it ends 0.6 s after the first server-reflexive candidate, at most 4 s), a spare peer
+  connection is prepared when the page loads, the Snowflake session starts in
+  parallel with reading storage, the host starts before the Service Worker has
+  finished installing, a proxy whose channel has not opened after 6 s is replaced, and
+  failed attempts are retried after 3 s instead of 10 s. A cold start that took over
+  a minute (or never finished) now reaches the first page in about 10 to 20 s.
+  `(await window.torSite).timeline` records every Tor client log line and state change
+  with a timestamp, for reading a slow start afterwards.
+- **Fix: the site adapter's cookie jar never saved.** Its IndexedDB database shared a
+  name with the Tor client's storage, so its store could not be created; logins did not
+  survive a restart of the worker. It now uses `tor-site-cookies`.
 - **Frame shell and WebRTC by default in the site adapter.**
   `"client": { "shell": "frame" }` makes the top-level document a persistent shell
   (`tor-shell.html`) that owns the host worker and the WebRTC peer connection while

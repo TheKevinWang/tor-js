@@ -45,3 +45,13 @@ export const SNOWFLAKE_WEBRTC_BRIDGES: readonly string[] = [
     + 'stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,'
     + 'stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443',
 ];
+
+/**
+ * The STUN servers of {@link SNOWFLAKE_WEBRTC_BRIDGES}, in the order the Tor
+ * client will pass them to a peer: a page can start gathering ICE candidates
+ * for them before the client has even loaded.
+ */
+export const SNOWFLAKE_WEBRTC_STUN: readonly string[] = (() => {
+  const ice = SNOWFLAKE_WEBRTC_BRIDGES[0].split(/\s+/).find((w) => w.startsWith('ice='));
+  return ice ? ice.slice(4).split(',').filter(Boolean) : [];
+})();

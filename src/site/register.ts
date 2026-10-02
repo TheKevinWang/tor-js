@@ -13,7 +13,8 @@
  */
 
 import type { SiteStatus } from './backend.js';
-import { servePeer } from './peerPage.js';
+import { prepareSpare, servePeer } from './peerPage.js';
+import { SNOWFLAKE_WEBRTC_STUN } from '../snowflake.js';
 
 export type { SiteStatus } from './backend.js';
 
@@ -44,6 +45,13 @@ export interface TorSite {
   /** Subscribe to state changes; returns an unsubscribe function. */
   onStatus(cb: (status: SiteStatus) => void): () => void;
   /**
+   * A timeline of the Tor client's log lines and state changes, newest last, each
+   * stamped with `performance.now()` (milliseconds since this page began loading).
+   * Kept even when debug printing is off, so a slow start can be read afterwards:
+   * `(await window.torSite).timeline`. Capped at 500 entries.
+   */
+  readonly timeline: readonly { t: number; kind: 'log' | 'status'; text: string }[];
+  /**
    * Resolves once the Service Worker has been connected to this page's Tor host
    * (at once when no host is used, and after 5 s regardless). Requests that must
    * reach the host should wait for it, or they can be routed to a stale one.
@@ -65,28 +73,37 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
   const registration = await navigator.serviceWorker.register(swUrl.href, opts.scope ? { scope: opts.scope } : undefined);
 
   let status: SiteStatus = { state: 'idle' };
+  const timeline: { t: number; kind: 'log' | 'status'; text: string }[] = [];
+  const note = (kind: 'log' | 'status', text: string) => {
+    timeline.push({ t: Math.round(performance.now()), kind, text });
+    if (timeline.length > 500) timeline.shift();
+  };
   const listeners = new Set<(s: SiteStatus) => void>();
   const debug = opts.debug ?? debugFlag();
   navigator.serviceWorker.addEventListener('message', (event) => {
     const data = event.data as { type?: string; status?: SiteStatus; level?: string; message?: string } | null;
     if (data?.type === 'tor-site-log') {
+      note('log', `${data.level} ${data.message}`);
       if (debug) console.log(`[tor-site ${data.level}]`, data.message);
       return;
     }
     if (data?.type !== 'tor-site-status' || !data.status) return;
     status = data.status;
+    note('status', `${status.state}${status.where ? ` (${status.where})` : ''}${status.message ? `: ${status.message}` : ''}`);
     for (const cb of listeners) cb(status);
   });
 
-  await navigator.serviceWorker.ready;
-  await controlled();
-  const active = navigator.serviceWorker.controller ?? registration.active;
-  active?.postMessage({ type: 'tor-site-hello' });
-
   // Where the Tor client runs. By default in a persistent worker that the
   // Service Worker is connected to; the Service Worker itself only routes.
+  // The host does not need the Service Worker to be active, so it is started
+  // (and begins loading the WASM and connecting) right away, in parallel with
+  // the worker installing; the attachment to the Service Worker follows.
   const manifestUrl = new URL(opts.manifest ?? 'tor-site.json', swUrl).href;
-  const wantHost = (await manifestHostMode(manifestUrl)) !== 'service-worker';
+  const client = await manifestClient(manifestUrl);
+  const wantHost = client.host !== 'service-worker';
+  // WebRTC (the default wherever a page can host it) needs an offer from this page;
+  // start preparing one now, while the WASM loads, instead of when it is asked for.
+  if (wantHost && client.snowflake !== true && client.snowflake !== 'websocket') prepareSpare(SNOWFLAKE_WEBRTC_STUN);
   const host = wantHost
     ? startHost({
         // Next to the Service Worker script, not the document: a shell served for a deep link
@@ -100,10 +117,13 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
         },
       })
     : null;
-  if (opts.prewarm !== false) {
-    if (host) host.warm();
-    else active?.postMessage({ type: 'tor-site-warm' });
-  }
+  if (opts.prewarm !== false && host) host.warm();
+
+  await navigator.serviceWorker.ready;
+  await controlled();
+  const active = navigator.serviceWorker.controller ?? registration.active;
+  active?.postMessage({ type: 'tor-site-hello' });
+  if (opts.prewarm !== false && !host) active?.postMessage({ type: 'tor-site-warm' });
   // With Tor inside the Service Worker, an idle worker is stopped by the browser
   // after ~30 s and its Tor client goes with it. Any message resets that timer.
   if (!wantHost) {
@@ -131,6 +151,7 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
       return () => listeners.delete(cb);
     },
     unregister: () => registration.unregister(),
+    timeline,
     hostAttached: host ? host.attached : Promise.resolve(),
   };
 }
@@ -149,15 +170,21 @@ interface HostConfig {
   scopePath: string;
 }
 
-/** `client.host` from the manifest ("auto" when it cannot be read; the worker validates the file). */
-async function manifestHostMode(manifestUrl: string): Promise<string> {
+/**
+ * `client.host` and `client.snowflake` from the manifest, with the defaults the
+ * worker will apply when they are absent (the worker validates the file; this is
+ * only to decide what to start early). Unreadable manifests count as all defaults.
+ */
+async function manifestClient(manifestUrl: string): Promise<{ host: string; snowflake: unknown }> {
+  let c: { host?: string; snowflake?: unknown } = {};
   try {
     const res = await fetch(manifestUrl);
-    const json = (await res.json()) as { client?: { host?: string } };
-    return json.client?.host ?? 'auto';
+    c = ((await res.json()) as { client?: typeof c }).client ?? {};
   } catch {
-    return 'auto';
+    // keep the defaults
   }
+  const host = c.host ?? 'auto';
+  return { host, snowflake: c.snowflake ?? (host === 'service-worker' ? true : 'webrtc') };
 }
 
 /**
