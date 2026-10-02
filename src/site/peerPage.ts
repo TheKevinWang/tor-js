@@ -34,6 +34,8 @@ export interface PeerDeps {
   heartbeatMs?: number;
   /** How long the worker may be silent before the page gives up on it. */
   silenceMs?: number;
+  /** How long a spare peer stays usable (tests). */
+  spareMaxAgeMs?: number;
 }
 
 /** A peer connection with its data channel and an offer that is being (or has been) prepared. */
@@ -45,6 +47,8 @@ interface Prepared {
   key: string;
   at: number;
   Ctor: typeof RTCPeerConnection;
+  /** Closes the peer if nobody has used it by the time its candidates go stale. */
+  expiry?: ReturnType<typeof setTimeout>;
 }
 
 function prepare(
@@ -79,7 +83,14 @@ export function prepareSpare(stunUrls: readonly string[], deps: PeerDeps = {}): 
   const PC = deps.RTCPeerConnection ?? (globalThis as { RTCPeerConnection?: typeof RTCPeerConnection }).RTCPeerConnection;
   if (!PC || spare) return;
   try {
-    spare = prepare(PC, stunUrls, deps);
+    const s = prepare(PC, stunUrls, deps);
+    // An unused spare would otherwise hold a peer connection (and its STUN
+    // bindings) for as long as the page lives.
+    s.expiry = setTimeout(() => {
+      if (spare === s) discardSpare();
+    }, deps.spareMaxAgeMs ?? SPARE_MAX_AGE_MS);
+    (s.expiry as { unref?: () => void }).unref?.();
+    spare = s;
   } catch {
     spare = null;
   }
@@ -90,14 +101,16 @@ export function discardSpare(): void {
   const s = spare;
   spare = null;
   if (!s) return;
+  if (s.expiry) clearTimeout(s.expiry);
   try { s.dc.close(); s.pc.close(); } catch { /* already closed */ }
 }
 
-function takeSpare(PC: typeof RTCPeerConnection, stun: readonly string[]): Prepared | null {
+function takeSpare(PC: typeof RTCPeerConnection, stun: readonly string[], maxAgeMs: number): Prepared | null {
   const s = spare;
   spare = null;
   if (!s) return null;
-  if (s.Ctor !== PC || s.key !== stun.join(',') || Date.now() - s.at > SPARE_MAX_AGE_MS) {
+  if (s.expiry) clearTimeout(s.expiry);
+  if (s.Ctor !== PC || s.key !== stun.join(',') || Date.now() - s.at > maxAgeMs) {
     try { s.dc.close(); s.pc.close(); } catch { /* already closed */ }
     return null;
   }
@@ -146,7 +159,10 @@ export function servePeer(port: MessagePort, deps: PeerDeps = {}): void {
 
   async function offer(stun: string[]): Promise<void> {
     if (!PC) throw new Error('RTCPeerConnection is not available in this page');
-    const prepared = takeSpare(PC, stun) ?? prepare(PC, stun, deps);
+    const prepared = takeSpare(PC, stun, deps.spareMaxAgeMs ?? SPARE_MAX_AGE_MS) ?? prepare(PC, stun, deps);
+    // The next offer (a hedged second attempt, or a retry after a proxy that
+    // never answered) then finds its candidates already gathered.
+    prepareSpare(stun, deps);
     pc = prepared.pc;
     dc = prepared.dc;
     dc.onmessage = (e) => {

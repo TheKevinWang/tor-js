@@ -61,12 +61,22 @@ export class IndexedDBStorage implements TorStorageSimple {
     });
   }
 
+  /**
+   * The key range holding exactly the keys that start with `prefix`. Without it
+   * every call reads the whole store: the directory cache is ~10 000 entries,
+   * and the Tor client asks for the `state:` prefix (two keys) and the `dir:`
+   * prefix at every start, so each start read everything twice.
+   */
+  private rangeFor(prefix: string): IDBKeyRange | undefined {
+    return prefix === '' ? undefined : IDBKeyRange.bound(prefix, prefix + '￿');
+  }
+
   async keys(prefix: string): Promise<string[]> {
     const db = await this.getDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(this.storeName, 'readonly');
       const store = tx.objectStore(this.storeName);
-      const request = store.getAllKeys();
+      const request = store.getAllKeys(this.rangeFor(prefix));
       request.onerror = () => reject(request.error);
       request.onsuccess = () => {
         const allKeys = request.result as string[];
@@ -80,8 +90,9 @@ export class IndexedDBStorage implements TorStorageSimple {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(this.storeName, 'readonly');
       const store = tx.objectStore(this.storeName);
-      const keysReq = store.getAllKeys();
-      const valsReq = store.getAll();
+      const range = this.rangeFor(prefix);
+      const keysReq = store.getAllKeys(range);
+      const valsReq = store.getAll(range);
       tx.onerror = () => reject(tx.error);
       tx.oncomplete = () => {
         const keys = keysReq.result as string[];

@@ -449,6 +449,18 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         info!("Using {} bridge(s)", options.bridges.len());
     }
 
+    // Floor for arti's circuit-build timeout. Its estimator starts from what it
+    // learned in earlier runs (state:circuit_timeouts) and can settle on a few
+    // hundred ms; over a Snowflake proxy with a 300-1500 ms round trip per hop
+    // such a circuit is abandoned before it can finish, and each abandoned one
+    // counts as a failure against the only guard. Tor's own default is 10 ms,
+    // meant for fast links.
+    if !options.bridges.is_empty() {
+        config_builder
+            .override_net_params()
+            .insert("cbtmintimeout".to_owned(), CIRCUIT_TIMEOUT_FLOOR_MS);
+    }
+
     let config = config_builder
         .build()
         .map_err(|e| JsTorError::config(format!("Failed to build config: {}", e)).into_js_value())?;
@@ -554,6 +566,12 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     })
 }
 
+/// Lowest circuit-build timeout (ms) used when connecting through bridges.
+/// In six cold starts with it every one reached a circuit; in three without it
+/// two ended with the bridge disabled for "mysterious" circuit deaths, both on
+/// a slow proxy (connect-speed-execplan.md, Artifacts).
+const CIRCUIT_TIMEOUT_FLOOR_MS: i32 = 7_000;
+
 /// Wait (up to a minute) until arti can build a circuit through its bridge.
 /// Failure is only logged: the caller's own requests will report it.
 async fn wait_for_bridge_circuit(tor_client: &ArtiTorClient<WasmRuntime>) {
@@ -577,7 +595,7 @@ async fn wait_for_bridge_circuit(tor_client: &ArtiTorClient<WasmRuntime>) {
     let limit = std::pin::pin!(gloo_timers::future::TimeoutFuture::new(60_000));
     match select(circuit, limit).await {
         Either::Left((Ok(()), _)) => {
-            info!("First circuit through the bridge after {:.1}s", started.elapsed().as_secs_f64())
+            info!("First circuit through the bridge after {:.1}s", started.elapsed().as_secs_f64());
         }
         Either::Left((Err(e), _)) => tracing::warn!("No circuit through the bridge yet: {e}"),
         Either::Right(_) => tracing::warn!("No circuit through the bridge after 60s"),

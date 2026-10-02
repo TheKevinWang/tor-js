@@ -41,7 +41,8 @@ class FakeDataChannel extends EventTarget {
 }
 
 class FakePeerConnection extends EventTarget {
-  static last = null
+  static last = null // the newest connection (serving an offer also prepares the next spare, so not always the one in use)
+  static first = null // the first connection created since the test began: the one that serves its first offer
   static noCandidates = false
   static neverOpen = false
   static neverComplete = false // gathering never reports "complete" (an unreachable STUN server keeps it open)
@@ -57,6 +58,7 @@ class FakePeerConnection extends EventTarget {
     this.config = config
     this.dc = new FakeDataChannel()
     FakePeerConnection.last = this
+    FakePeerConnection.first ??= this
   }
   createDataChannel() { return this.dc }
   async createOffer() { return { type: 'offer', sdp: 'v=0 offer' } }
@@ -85,7 +87,9 @@ class FakePeerConnection extends EventTarget {
 }
 
 beforeEach(() => {
+  m.discardSpare() // the spare is module state, and serving an offer prepares the next one
   FakePeerConnection.last = null
+  FakePeerConnection.first = null
   FakePeerConnection.noCandidates = false
   FakePeerConnection.neverOpen = false
   FakePeerConnection.neverComplete = false
@@ -106,7 +110,7 @@ async function open(pageDeps, relayOptions) {
   const peer = await factory()
   await peer.offer(['stun:one.example:3478', 'stun:two.example:3478'])
   const socket = await peer.open('ANSWER-SDP')
-  return { peer, socket, ch, pc: FakePeerConnection.last }
+  return { peer, socket, ch, pc: FakePeerConnection.first }
 }
 
 describe('peer relay', () => {
@@ -115,7 +119,7 @@ describe('peer relay', () => {
     const peer = await factory()
     const sdp = await peer.offer(['stun:one.example:3478', 'stun:two.example:3478'])
     assert.match(sdp, /a=candidate:/)
-    const pc = FakePeerConnection.last
+    const pc = FakePeerConnection.first
     assert.deepEqual(pc.config.iceServers, [{ urls: 'stun:one.example:3478' }, { urls: 'stun:two.example:3478' }])
     assert.equal(pc.dc.binaryType, 'arraybuffer')
     await peer.open('ANSWER-SDP')
@@ -278,8 +282,6 @@ describe('the spare peer', () => {
   const STUN = ['stun:a.example:3478', 'stun:b.example:3478']
   const deps = { RTCPeerConnection: FakePeerConnection, gatherGraceMs: 20, gatherMaxMs: 1000 }
 
-  beforeEach(() => m.discardSpare()) // the spare is module state: start every test without one
-
   async function offerThrough(stun, extra = {}) {
     const ch = new MessageChannel()
     m.servePeer(ch.port2, { ...deps, ...extra })
@@ -288,25 +290,38 @@ describe('the spare peer', () => {
     return { peer, sdp }
   }
 
-  test('a spare prepared ahead is used for the matching request, so no new connection is made', async () => {
+  test('a spare prepared ahead is used for the matching request, so no connection is made for it', async () => {
     m.prepareSpare(STUN, deps)
+    const spare = FakePeerConnection.last
     assert.equal(FakePeerConnection.created, 1)
     await tick(30)
     const { peer, sdp } = await offerThrough(STUN)
     assert.match(sdp, /a=candidate:/)
-    assert.equal(FakePeerConnection.created, 1, 'the offer came from the spare')
-    assert.deepEqual(FakePeerConnection.last.config.iceServers, STUN.map((urls) => ({ urls })))
     await peer.open('ANSWER')
+    assert.deepEqual(spare.remote, { type: 'answer', sdp: 'ANSWER' }, 'the spare is the connection that was used')
+    assert.deepEqual(spare.config.iceServers, STUN.map((urls) => ({ urls })))
+    assert.equal(FakePeerConnection.created, 2, 'only the replacement spare was made')
     peer.close()
   })
 
-  test('the spare is used once: a second request makes a new connection', async () => {
+  test('using the spare prepares the next one, so a hedged or retried attempt finds it ready', async () => {
     m.prepareSpare(STUN, deps)
     const a = await offerThrough(STUN)
+    assert.equal(FakePeerConnection.created, 2, 'the replacement was made as soon as the first was used')
+    const replacement = FakePeerConnection.last
     const b = await offerThrough(STUN)
-    assert.equal(FakePeerConnection.created, 2)
+    await b.peer.open('ANSWER')
+    assert.deepEqual(replacement.remote, { type: 'answer', sdp: 'ANSWER' }, 'the second request used the replacement')
+    assert.equal(FakePeerConnection.created, 3)
     a.peer.close()
     b.peer.close()
+  })
+
+  test('with no spare the request makes its own connection and still prepares the next', async () => {
+    const { peer } = await offerThrough(STUN)
+    assert.equal(FakePeerConnection.created, 2)
+    assert.equal(FakePeerConnection.first.closed, false)
+    peer.close()
   })
 
   test('a spare for different STUN servers is discarded and closed, and a fresh connection is made', async () => {
@@ -314,7 +329,25 @@ describe('the spare peer', () => {
     const spare = FakePeerConnection.last
     const { peer } = await offerThrough(['stun:other.example:3478'])
     assert.equal(spare.closed, true)
-    assert.equal(FakePeerConnection.created, 2)
+    assert.equal(FakePeerConnection.created, 3, 'the spare, the fresh connection, and the next spare for the new STUN list')
+    peer.close()
+  })
+
+  test('an unused spare closes itself once its candidates would be stale', async () => {
+    m.prepareSpare(STUN, { ...deps, spareMaxAgeMs: 40 })
+    const spare = FakePeerConnection.last
+    assert.equal(spare.closed, false)
+    await tick(120)
+    assert.equal(spare.closed, true)
+  })
+
+  test('a spare that is taken is not closed by its expiry timer', async () => {
+    m.prepareSpare(STUN, { ...deps, spareMaxAgeMs: 40 })
+    const spare = FakePeerConnection.last
+    const { peer } = await offerThrough(STUN, { spareMaxAgeMs: 40 })
+    await peer.open('ANSWER')
+    await tick(120)
+    assert.equal(spare.closed, false, 'the connection in use survives its spare timer')
     peer.close()
   })
 
@@ -336,7 +369,7 @@ describe('the spare peer', () => {
     now += 25_000 // older than the 20 s limit
     const { peer } = await offerThrough(STUN)
     assert.equal(spare.closed, true, 'the stale spare was thrown away')
-    assert.equal(FakePeerConnection.created, 2)
+    assert.equal(FakePeerConnection.created, 3, 'the spare, a fresh connection, and the next spare')
     peer.close()
   })
 })

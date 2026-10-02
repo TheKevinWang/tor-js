@@ -48,6 +48,12 @@ const MAX_ATTEMPTS: u32 = 10;
 /// asked once per attempt.
 const ATTEMPT_INTERVAL: Duration = Duration::from_secs(3);
 
+/// How long the first attempt may run before a second is started beside it.
+/// Matches come back in 1 to 2 s when a proxy is free; an attempt still going
+/// after 3 s is usually waiting out the broker's empty poll (about 5 s) or a
+/// proxy that will not answer, so a second request recovers most of that wait.
+const HEDGE_AFTER_MS: u32 = 3_000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct WebRtcConfig {
     pub(crate) broker_url: String,
@@ -329,12 +335,38 @@ async fn attempt(config: &WebRtcConfig) -> io::Result<Carrier> {
     }
 }
 
+/// The first attempt of a dial, with a second started beside it if it is slow.
+/// The first to open wins and the other is dropped (which closes its peer).
+/// Only the first attempt is hedged: a slow answer here costs a person waiting
+/// for the first page, while later attempts are already a retry, and every
+/// extra request costs a volunteer proxy that may never be used.
+async fn hedged_attempt(config: &WebRtcConfig) -> io::Result<Carrier> {
+    use futures::future::{select, Either};
+
+    let first = Box::pin(attempt(config));
+    match select(first, TimeoutFuture::new(HEDGE_AFTER_MS)).await {
+        Either::Left((result, _)) => result,
+        Either::Right((_, first)) => {
+            info!("Snowflake: no proxy after {}s; asking for a second one in parallel", HEDGE_AFTER_MS / 1000);
+            let second = Box::pin(attempt(config));
+            match select(first, second).await {
+                Either::Left((Ok(carrier), _)) | Either::Right((Ok(carrier), _)) => Ok(carrier),
+                Either::Left((Err(e), other)) | Either::Right((Err(e), other)) => {
+                    warn!("Snowflake WebRTC: one of two parallel attempts failed: {e}");
+                    other.await.map_err(|_| e)
+                }
+            }
+        }
+    }
+}
+
 /// Dial a proxy, retrying as the official client does.
 pub(crate) async fn dial(config: &WebRtcConfig) -> io::Result<Carrier> {
     let mut last = None;
     for attempt_no in 1..=MAX_ATTEMPTS {
         let started = Instant::now();
-        match attempt(config).await {
+        let result = if attempt_no == 1 { hedged_attempt(config).await } else { attempt(config).await };
+        match result {
             Ok(s) => return Ok(s),
             Err(e) => {
                 warn!("Snowflake WebRTC attempt {attempt_no}/{MAX_ATTEMPTS} failed: {e}");

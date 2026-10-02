@@ -16,6 +16,13 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Steadier start-up on slow Snowflake proxies.** Circuits through a bridge get at
+  least 7 s to build (Tor's default floor of 10 ms let a slow proxy's circuits be
+  abandoned until the only bridge was disabled); the first broker request is
+  repeated beside itself after 3 s without a proxy; the spare WebRTC peer is replaced
+  after use (and closes itself after 20 s unused); IndexedDB reads only the key range
+  asked for instead of the whole store. On a good proxy day start-up is unchanged
+  (about 2 s to an open channel, 5 s to Tor ready, 12 s to the first page).
 - **Faster, steadier start-up for the WebRTC carrier.** Tor's saved guard state could
   mark the only (Snowflake) bridge permanently `disabled` after a few slow or failed
   runs, after which every page load sat silent without dialling it; the mark is now
