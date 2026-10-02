@@ -121,6 +121,19 @@ describe('when to inject', () => {
     assert.equal(m.shouldInject('iframe', 'text/html'), false)
   })
 
+  test('iframe documents are injected only where the shell shows the site in an iframe', () => {
+    assert.equal(m.shouldInject('iframe', 'text/html', true), true)
+    assert.equal(m.shouldInject('iframe', 'text/html', false), false)
+    assert.equal(m.shouldInject('iframe', 'application/json', true), false)
+    assert.equal(m.shouldInject('script', 'text/html', true), false)
+  })
+
+  test('the frame role is marked on the tag, and only then', () => {
+    const urls = { script: '/s.js', sw: '/sw.js', manifest: '/m.json' }
+    assert.match(m.pageScriptTag(urls, 'frame'), / data-role="frame"><\/script>$/)
+    assert.doesNotMatch(m.pageScriptTag(urls), /data-role/)
+  })
+
   test('the tag escapes its attribute values', () => {
     const tag = m.pageScriptTag({ script: '/a b/tor-site.js', sw: '/sw.js?manifest=%2Ftor-site.json&x="1"', manifest: '/m.json' })
     assert.match(tag, /data-sw="\/sw\.js\?manifest=%2Ftor-site\.json&amp;x=&quot;1&quot;"/)

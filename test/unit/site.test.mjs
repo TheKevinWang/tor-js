@@ -117,8 +117,24 @@ describe('manifest routing', () => {
     assert.throws(() => parse({ backendKnowsBase: 'yes' }), /backendKnowsBase/)
   })
 
-  test('client defaults to Snowflake over WebSocket with a persistent host', () => {
-    assert.deepEqual(parse({}).client, { snowflake: true, host: 'auto' })
+  test('the default carrier is WebRTC wherever a page can host the peer, WebSocket otherwise', () => {
+    assert.deepEqual(parse({}).client, { snowflake: 'webrtc', host: 'auto' })
+    assert.deepEqual(m.parseManifest({}).client, { snowflake: 'webrtc', host: 'auto' }, 'no client section at all')
+    assert.equal(parse({ client: { host: 'service-worker' } }).client.snowflake, true, 'no page can host a peer there')
+    assert.equal(parse({ client: { snowflake: 'websocket' } }).client.snowflake, 'websocket', 'always an opt-out')
+    assert.equal(parse({ client: { snowflake: true } }).client.snowflake, true)
+    assert.throws(() => parse({ client: { snowflake: 'webrtc', host: 'service-worker' } }), /"webrtc".*"service-worker"/, 'an explicit choice is not overridden')
+  })
+
+  test('client.shell: the persistent frame shell', () => {
+    const c = parse({ client: { shell: 'frame', shellPage: 'shell/tor.html' } }).client
+    assert.equal(c.shell, 'frame')
+    assert.equal(c.shellPage, 'shell/tor.html')
+    assert.equal(c.snowflake, 'webrtc', 'WebRTC is available with a shell')
+    assert.equal(parse({}).client.shell, undefined)
+    assert.throws(() => parse({ client: { shell: 'iframe' } }), /"client.shell" must be "frame"/)
+    assert.throws(() => parse({ client: { shell: 'frame', host: 'service-worker' } }), /"frame".*"service-worker"/)
+    assert.throws(() => parse({ client: { shellPage: 4 } }), /shellPage/)
   })
 })
 

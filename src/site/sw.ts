@@ -17,6 +17,7 @@ import { SiteRouter } from './router.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { PortBackend } from './rpc.js';
 import { injectIntoHtml, pageScriptTag, shouldInject } from './inject.js';
+import { adaptForFrame } from './frameHeaders.js';
 import { errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
 
 declare const self: ServiceWorkerGlobalScope;
@@ -33,6 +34,10 @@ interface Loaded {
   local: LocalBackend;
   /** The `<script>` tag inserted into HTML documents served from the onion, or null when injection is off. */
   injectTag: string | null;
+  /** Same, for documents shown in the shell's iframe (it tells the script it is inside the frame). */
+  frameInjectTag: string | null;
+  /** The static shell page, when the manifest asks for the persistent frame shell. */
+  shell: { url: string } | null;
 }
 
 /** Tor hosts (persistent workers) that pages have attached, oldest first. */
@@ -61,14 +66,18 @@ function load(): Promise<Loaded> {
       const url = new URL(u, manifestUrl);
       return url.pathname + url.search;
     };
-    const injectTag = manifest.client.inject === false
-      ? null
-      : pageScriptTag({
-          script: rel(manifest.client.pageScript ?? 'tor-site.js'),
-          sw: rel(self.location.href),
-          manifest: rel(manifestUrl),
-        });
-    return { manifest, router, local, injectTag };
+    const tagUrls = {
+      script: rel(manifest.client.pageScript ?? 'tor-site.js'),
+      sw: rel(self.location.href),
+      manifest: rel(manifestUrl),
+    };
+    const inject = manifest.client.inject !== false;
+    const injectTag = inject ? pageScriptTag(tagUrls) : null;
+    const frameInjectTag = inject ? pageScriptTag(tagUrls, 'frame') : null;
+    const shell = manifest.client.shell === 'frame'
+      ? { url: new URL(manifest.client.shellPage ?? 'tor-shell.html', manifestUrl).href }
+      : null;
+    return { manifest, router, local, injectTag, frameInjectTag, shell };
   })();
   loading = attempt.then(
     (v) => (loaded = v),
@@ -118,6 +127,7 @@ self.addEventListener('message', (event) => {
   } else if (data.type === 'tor-site-host') {
     const port = (data as { port?: MessagePort }).port;
     if (port) attachHost(port);
+    (event.source as Client | null)?.postMessage({ type: 'tor-site-host-ack' });
   }
 });
 
@@ -153,6 +163,32 @@ async function liveHost(): Promise<PortBackend | null> {
 let warnedAboutNavigation = false;
 
 /**
+ * The WebRTC carrier cannot run in this worker (it needs a page to hold the peer
+ * connection), so the host is the only backend that can serve: never fall back
+ * to the client in this worker, which could only fail.
+ */
+const needsHost = (l: Loaded): boolean => l.manifest.client.snowflake === 'webrtc';
+
+/** A live host, asking open pages to attach one and waiting for it, for up to `timeoutMs`; the local client only after that. */
+async function waitForHost(l: Loaded, timeoutMs = 30_000): Promise<SiteBackend> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const host = await liveHost();
+    if (host) return host;
+    const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (pages.length > 0) {
+      const arrived = new Promise<void>((resolve) => (hostArrived = resolve));
+      for (const p of pages) p.postMessage({ type: 'tor-site-need-host' });
+      await Promise.race([arrived, new Promise((r) => setTimeout(r, 2000))]);
+      hostArrived = null;
+    } else {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (Date.now() > deadline) return l.local; // fails with a message saying a page is needed
+  }
+}
+
+/**
  * Where a Tor request is served: the persistent host when one is attached and
  * alive; else, if pages are open, ask them to attach one (this worker may have
  * just restarted and forgotten its ports); else Tor inside this worker.
@@ -165,6 +201,7 @@ let warnedAboutNavigation = false;
  */
 async function pickBackend(l: Loaded, request: Request): Promise<SiteBackend> {
   if (l.manifest.client.host === 'service-worker') return l.local;
+  if (needsHost(l)) return waitForHost(l);
   if (request.destination === 'document') {
     if (!warnedAboutNavigation) {
       warnedAboutNavigation = true;
@@ -228,8 +265,31 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+/**
+ * With the frame shell, a top-level navigation to a Tor route is answered with
+ * the shell page (fetched from the static host, as a 200 even where the static
+ * host would say 404 for the path); the shell then loads the real page into its
+ * iframe, which comes from Tor.
+ */
+async function shellResponse(shell: { url: string }): Promise<Response> {
+  try {
+    const res = await fetch(shell.url, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return new Response(res.body, {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-tor-site': 'shell' },
+    });
+  } catch (e) {
+    return new Response(`tor-site: cannot load the shell page ${shell.url}: ${e instanceof Error ? e.message : String(e)}\n`, {
+      status: 502,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+}
+
 async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
   const request = event.request;
+  if (l.shell && request.mode === 'navigate' && request.destination === 'document') return shellResponse(l.shell);
   try {
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
     const siteRequest: SiteRequest = {
@@ -251,19 +311,35 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
       // of the Tor client in this worker instead.
       const safe = request.method === 'GET' || request.method === 'HEAD';
       if (backend === l.local || !safe || request.signal.aborted) throw e;
-      publishLog('warn', `[sw] ${path}: the host failed (${e instanceof Error ? e.message : String(e)}); retrying with Tor in the Service Worker`);
-      response = await l.local.handle(siteRequest);
+      const why = e instanceof Error ? e.message : String(e);
+      if (needsHost(l)) {
+        // The failed host has been dropped; ask for another live one rather than the local client.
+        publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with another host`);
+        response = await (await waitForHost(l)).handle(siteRequest);
+      } else {
+        publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with Tor in the Service Worker`);
+        response = await l.local.handle(siteRequest);
+      }
     }
     publishLog('debug', `[sw] ${request.method} ${path} -> ${response.status}${request.mode === 'navigate' ? ' (navigation)' : ''}`);
-    return toResponse(response, event, `${request.method} ${path}`, request.destination === 'document' ? l.injectTag : null);
+    const inFrame = l.shell !== null && request.destination === 'iframe';
+    const tag = inFrame ? l.frameInjectTag : request.destination === 'document' ? l.injectTag : null;
+    return toResponse(response, event, `${request.method} ${path}`, tag, inFrame);
   } catch (e) {
     return toResponse(errorResponse(502, `tor-site: ${e instanceof Error ? e.message : String(e)}`), event);
   }
 }
 
-function toResponse(r: SiteResponse, event: FetchEvent, label = '', injectTag: string | null = null): Response {
+function toResponse(
+  r: SiteResponse,
+  event: FetchEvent,
+  label = '',
+  injectTag: string | null = null,
+  inFrame = false,
+): Response {
   const headers = new Headers();
-  for (const [k, v] of r.headers) {
+  // In the shell's iframe the document may be framed by this site only.
+  for (const [k, v] of inFrame ? adaptForFrame(r.headers) : r.headers) {
     try {
       headers.append(k, v);
     } catch {
@@ -273,7 +349,7 @@ function toResponse(r: SiteResponse, event: FetchEvent, label = '', injectTag: s
   // Lets a page (and the demo) tell a Tor-served response from a static one.
   headers.set('x-tor-site', 'tor');
   let body = r.body;
-  if (body && injectTag && shouldInject('document', headers.get('content-type') ?? undefined)) {
+  if (body && injectTag && shouldInject(inFrame ? 'iframe' : 'document', headers.get('content-type') ?? undefined, inFrame)) {
     body = body.pipeThrough(injectIntoHtml(injectTag));
     headers.delete('content-length'); // the length changes
   }

@@ -51,6 +51,16 @@ export interface ClientOptions {
   inject?: boolean;
   /** URL (relative to the manifest) of the page script that `inject` inserts. Default `tor-site.js`. */
   pageScript?: string;
+  /**
+   * `"frame"`: the top-level document is a persistent shell that holds the host
+   * worker and the WebRTC peer connection, and the site runs in a full-viewport
+   * same-origin iframe, so a server-rendered site's navigations never unload the
+   * document that must stay. Needs the shell page (`shellPage`) on the static
+   * host, and the default worker host (not `"host": "service-worker"`).
+   */
+  shell?: 'frame';
+  /** URL (relative to the manifest) of the shell page. Default `tor-shell.html`. */
+  shellPage?: string;
 }
 
 export interface SiteManifest {
@@ -165,13 +175,24 @@ function parseStrip(v: unknown, where: string): string {
   return v.replace(/\/+$/, '');
 }
 
+/**
+ * The Snowflake carrier when the manifest does not choose one: WebRTC (a
+ * volunteer proxy, much harder to block than one named server) wherever a page
+ * can host the peer connection, which is every placement except the Tor client
+ * inside the Service Worker; there, the WebSocket carrier. Chosen from the
+ * manifest, never switched at run time after a failure.
+ */
+function defaultSnowflake(host: ClientOptions['host']): 'webrtc' | true {
+  return host === 'service-worker' ? true : 'webrtc';
+}
+
 function parseClient(v: unknown): ClientOptions {
-  if (v === undefined) return { snowflake: true, host: 'auto' };
+  if (v === undefined) return { snowflake: defaultSnowflake('auto'), host: 'auto' };
   if (!v || typeof v !== 'object' || Array.isArray(v)) {
     throw new Error('tor-site manifest: "client" must be an object');
   }
   const c = v as Record<string, unknown>;
-  const out: ClientOptions = { snowflake: true, host: 'auto' };
+  const out: ClientOptions = { host: 'auto' };
   if (c.snowflake !== undefined) {
     if (c.snowflake !== true && c.snowflake !== 'websocket' && c.snowflake !== 'webrtc') {
       throw new Error('tor-site manifest: "client.snowflake" must be true, "websocket" or "webrtc"');
@@ -182,7 +203,11 @@ function parseClient(v: unknown): ClientOptions {
     if (typeof c.inject !== 'boolean') throw new Error('tor-site manifest: "client.inject" must be true or false');
     out.inject = c.inject;
   }
-  for (const key of ['bootstrapUrl', 'wasmUrl', 'pageScript'] as const) {
+  if (c.shell !== undefined) {
+    if (c.shell !== 'frame') throw new Error('tor-site manifest: "client.shell" must be "frame"');
+    out.shell = c.shell;
+  }
+  for (const key of ['bootstrapUrl', 'wasmUrl', 'pageScript', 'shellPage'] as const) {
     if (c[key] !== undefined) {
       if (typeof c[key] !== 'string') throw new Error(`tor-site manifest: "client.${key}" must be a string`);
       out[key] = c[key] as string;
@@ -194,6 +219,12 @@ function parseClient(v: unknown): ClientOptions {
     }
     out.host = c.host;
   }
+  if (out.shell === 'frame' && out.host === 'service-worker') {
+    throw new Error(
+      'tor-site manifest: "client.shell": "frame" keeps the Tor client in a worker host that the shell stays connected to, so it cannot be combined with "client.host": "service-worker"',
+    );
+  }
+  if (c.snowflake === undefined) out.snowflake = defaultSnowflake(out.host);
   if (out.snowflake === 'webrtc' && out.host === 'service-worker') {
     // Workers have no RTCPeerConnection; only a page can host one, and with the
     // Tor client inside the Service Worker no page is attached.

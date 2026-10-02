@@ -284,7 +284,8 @@ What the adapter does for you:
   false }` turns that off), and the script pings the worker every 20 s. Even in
   the default mode, a navigation served over Tor always uses the Tor client in
   the Service Worker, for the same reason, and the adapter logs a warning
-  suggesting `"service-worker"`. If a worker host dies with requests in flight
+  suggesting `"service-worker"` (or use the frame shell below, which keeps WebRTC
+  available). If a worker host dies with requests in flight
   they fail after ~20 s of silence, and safe (GET/HEAD) ones are retried on the
   Service Worker's client.
 - **Project pages.** A site at `https://user.github.io/repo/` has the Service
@@ -306,6 +307,46 @@ scope are seen (cross-origin iframes and third-party pages are not); uploads are
 buffered in memory. The onion address is public in the manifest: it is a
 routing table, not a secret. Anyone who can run script on the static origin can
 use the adapter to reach the backend, exactly as they could use its cookies.
+
+### The default carrier, and WebRTC for multi-page sites (the frame shell)
+
+Unless the manifest says otherwise (`"client": { "snowflake": ... }`), the adapter
+now uses the **WebRTC** Snowflake carrier (a volunteer proxy, hard to block)
+wherever a page can hold the peer connection, which is every placement except
+`"host": "service-worker"`; there the default is the WebSocket carrier.
+`"snowflake": "websocket"` always opts out. The choice is made from the manifest,
+never switched after a failure. WebRTC starts slower and more variably than the
+WebSocket carrier (broker match and ICE; 15 s to over a minute depending on the
+proxy you get), and it needs a page of the site to stay open.
+
+A server-rendered multi-page site would unload that page on every click, so give
+it the **frame shell**: `"client": { "shell": "frame" }`.
+
+- The top-level document becomes a small shell (`tor-shell.html`, which you also
+  copy to `index.html` and `404.html` so a first visit, including to a deep link,
+  bootstraps) that never navigates. It owns the Tor host worker and the WebRTC
+  connection, and the site runs in a full-viewport same-origin `<iframe>`.
+- Clicks, form posts and redirects navigate only the iframe, with native
+  behaviour (scripts, forms, history, scroll restoration). The shell keeps the
+  address bar and title in step, so it looks like an ordinary site; the back
+  button steps the iframe. Verified in a browser with a real forum: 10+ navigations
+  and a session of register, post, reply and logout without a second Tor client or
+  data channel.
+- The Service Worker answers a top-level navigation to a Tor route with the shell
+  page, and serves iframe navigations from Tor. It removes `X-Frame-Options` and
+  any `frame-ancestors` from the backend's headers and adds `frame-ancestors
+  'self'`, so the backend cannot break the frame and other sites cannot frame it.
+  The page script it inserts into those documents (role `frame`) exposes
+  `window.torSite` and sends links that leave the site, or ask for `_top`, to the
+  top level.
+- **Costs.** A top-level reload, a typed URL, or a `target="_top"` link makes a new
+  shell, which starts Tor and the WebRTC connection again; with WebRTC that took
+  about 90 s to the first page in testing (about 35 s for the channel, then a
+  circuit to the onion). The WebSocket carrier is faster there. Pages that refuse
+  framing by JavaScript (frame-busting) do not work. The shell needs a page
+  that stays open: if the owning tab closes, another open tab of the site takes
+  over; with none, requests fail (they never fall back to another carrier).
+- `"shell": "frame"` cannot be combined with `"host": "service-worker"`.
 
 ### A worked example: a forum
 

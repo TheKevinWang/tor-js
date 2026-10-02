@@ -7,3 +7,5 @@ export * from '../../../src/site/rpc.js';
 export * from '../../../src/site/peerRelay.js';
 export * from '../../../src/site/peerPage.js';
 export * from '../../../src/site/inject.js';
+export * from '../../../src/site/frame.js';
+export * from '../../../src/site/frameHeaders.js';

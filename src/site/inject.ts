@@ -10,17 +10,21 @@
  */
 
 /** The `<script>` tag for the adapter's page script (`tor-site.js`). Attribute values are escaped. */
-export function pageScriptTag(urls: { script: string; sw: string; manifest: string }): string {
+export function pageScriptTag(urls: { script: string; sw: string; manifest: string }, role?: 'frame'): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
   return (
     `<script src="${esc(urls.script)}" data-sw="${esc(urls.sw)}" data-manifest="${esc(urls.manifest)}" ` +
-    `data-prewarm="false" data-injected="true"></script>`
+    `data-prewarm="false" data-injected="true"${role ? ` data-role="${role}"` : ''}></script>`
   );
 }
 
-/** Whether a response to `destination` with this `content-type` should get the script. */
-export function shouldInject(destination: string, contentType: string | undefined): boolean {
-  if (destination !== 'document') return false;
+/**
+ * Whether a response to `destination` with this `content-type` should get the
+ * script: documents, and iframe documents only where the shell shows the site
+ * in an iframe (`allowIframe`).
+ */
+export function shouldInject(destination: string, contentType: string | undefined, allowIframe = false): boolean {
+  if (destination !== 'document' && !(allowIframe && destination === 'iframe')) return false;
   if (!contentType) return false;
   const m = /^\s*text\/html\s*(?:;(.*))?$/i.exec(contentType);
   if (!m) return false;

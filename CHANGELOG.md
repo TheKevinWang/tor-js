@@ -16,6 +16,19 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Frame shell and WebRTC by default in the site adapter.**
+  `"client": { "shell": "frame" }` makes the top-level document a persistent shell
+  (`tor-shell.html`) that owns the host worker and the WebRTC peer connection while
+  the site runs in a same-origin iframe, so server-rendered multi-page sites can use
+  the WebRTC Snowflake carrier (a document that holds a peer connection must not
+  unload). The Service Worker serves the shell for top-level navigations and Tor
+  pages for iframe navigations, drops `X-Frame-Options`, and replaces
+  `frame-ancestors` with `'self'`; the shell mirrors the iframe's URL and title.
+  The default carrier is now WebRTC wherever a page can host it (WebSocket with
+  `"host": "service-worker"`; `"snowflake": "websocket"` opts out). With WebRTC the
+  Service Worker never falls back to its own Tor client: it waits for a live host,
+  and the shell waits for the Service Worker to acknowledge its host before loading
+  the site. Breaking-ish: manifests without a `client.snowflake` now use WebRTC.
 - **Multi-page (server-rendered) sites in the site adapter.** Found by running a
   real forum (`examples/flaskbb-demo/`): `"client": { "host": "service-worker" }`
   keeps the Tor client in the Service Worker, which survives navigation (a

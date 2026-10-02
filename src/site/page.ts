@@ -12,17 +12,31 @@
  */
 
 import { registerTorSite, type RegisterOptions, type TorSite } from './register.js';
+import { startFrameRole, startFrameShell } from './frame.js';
 
 const script = document.currentScript as HTMLScriptElement | null;
 const d = script?.dataset ?? {};
-const opts: RegisterOptions = {};
-if (d.sw) opts.sw = new URL(d.sw, document.baseURI).href;
-if (d.manifest) opts.manifest = d.manifest;
-if (d.scope) opts.scope = d.scope;
-if (d.host) opts.hostScript = new URL(d.host, document.baseURI).href;
-if (d.prewarm === 'false') opts.prewarm = false;
-if (d.debug === 'true') opts.debug = true;
 
-const promise: Promise<TorSite> = registerTorSite(opts);
-promise.catch((e) => console.error('[tor-site]', e));
-(window as unknown as { torSite: Promise<TorSite> }).torSite = promise;
+if (d.role === 'frame') {
+  // Inside the shell's iframe: nothing to register, the shell owns the site.
+  startFrameRole();
+} else {
+  const opts: RegisterOptions = {};
+  if (d.sw) opts.sw = new URL(d.sw, document.baseURI).href;
+  if (d.manifest) opts.manifest = d.manifest;
+  if (d.scope) opts.scope = d.scope;
+  if (d.host) opts.hostScript = new URL(d.host, document.baseURI).href;
+  if (d.prewarm === 'false') opts.prewarm = false;
+  if (d.debug === 'true') opts.debug = true;
+
+  const promise: Promise<TorSite> = registerTorSite(opts);
+  promise.catch((e) => console.error('[tor-site]', e));
+  (window as unknown as { torSite: Promise<TorSite> }).torSite = promise;
+
+  // The persistent shell: show the site in an iframe once Tor is reachable.
+  if (d.shell === 'frame') {
+    const start = () => startFrameShell(promise);
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start, { once: true });
+  }
+}

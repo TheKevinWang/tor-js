@@ -43,6 +43,12 @@ export interface TorSite {
   ready(): Promise<void>;
   /** Subscribe to state changes; returns an unsubscribe function. */
   onStatus(cb: (status: SiteStatus) => void): () => void;
+  /**
+   * Resolves once the Service Worker has been connected to this page's Tor host
+   * (at once when no host is used, and after 5 s regardless). Requests that must
+   * reach the host should wait for it, or they can be routed to a stale one.
+   */
+  readonly hostAttached: Promise<void>;
   /** Remove the Service Worker (the site goes back to plain static hosting). */
   unregister(): Promise<boolean>;
 }
@@ -83,7 +89,9 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
   const wantHost = (await manifestHostMode(manifestUrl)) !== 'service-worker';
   const host = wantHost
     ? startHost({
-        script: new URL(opts.hostScript ?? 'tor-site-host.js', document.baseURI).href,
+        // Next to the Service Worker script, not the document: a shell served for a deep link
+        // such as /forum/1-welcome has a different base URL.
+        script: new URL(opts.hostScript ?? 'tor-site-host.js', swUrl).href,
         name: `tor-site:${new URL(registration.scope).pathname}`,
         config: {
           manifestUrl,
@@ -123,6 +131,7 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
       return () => listeners.delete(cb);
     },
     unregister: () => registration.unregister(),
+    hostAttached: host ? host.attached : Promise.resolve(),
   };
 }
 
@@ -158,7 +167,7 @@ async function manifestHostMode(manifestUrl: string): Promise<string> {
  * the Service Worker, which forgets its ports whenever the browser restarts it
  * and then asks (`tor-site-need-host`) for a new one.
  */
-function startHost(opts: { script: string; name: string; config: HostConfig }): { warm(): void } | null {
+function startHost(opts: { script: string; name: string; config: HostConfig }): { warm(): void; attached: Promise<void> } | null {
   let control: MessagePort | Worker;
   try {
     if (typeof SharedWorker !== 'undefined') {
@@ -191,12 +200,22 @@ function startHost(opts: { script: string; name: string; config: HostConfig }): 
     control.postMessage({ t: 'attach', port: channel.port2, config: opts.config }, [channel.port2]);
     sw.postMessage({ type: 'tor-site-host', port: channel.port1 }, [channel.port1]);
   };
+  // The Service Worker answers an attachment with `tor-site-host-ack`.
+  const attached = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 5000);
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if ((event.data as { type?: string } | null)?.type === 'tor-site-host-ack') {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
   attach();
   navigator.serviceWorker.addEventListener('controllerchange', attach);
   navigator.serviceWorker.addEventListener('message', (event) => {
     if ((event.data as { type?: string } | null)?.type === 'tor-site-need-host') attach();
   });
-  return { warm: () => control.postMessage({ t: 'warm', config: opts.config }) };
+  return { warm: () => control.postMessage({ t: 'warm', config: opts.config }), attached };
 }
 
 /** Resolves once a Service Worker controls this page (immediately when one already does). */
