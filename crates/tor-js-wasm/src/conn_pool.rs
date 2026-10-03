@@ -57,6 +57,11 @@ impl<T> IdlePool<T> {
         }
     }
 
+    /// Drop every idle connection, which closes them.
+    pub fn clear(&mut self) {
+        self.idle.clear();
+    }
+
     /// Number of idle connections held.
     pub fn len(&self) -> usize {
         self.idle.values().map(Vec::len).sum()
@@ -141,6 +146,18 @@ mod tests {
         assert_eq!(pool.len(), 2);
         assert_eq!(pool.take("h", 80, 1.0), Some(4));
         assert_eq!(pool.take("h", 80, 1.0), Some(3));
+    }
+
+    #[test]
+    fn clearing_drops_everything_and_the_pool_stays_usable() {
+        let mut pool = IdlePool::new(4, 16);
+        pool.put("a", 80, 1, 0.0, 1000.0);
+        pool.put("b", 80, 2, 0.0, 1000.0);
+        pool.clear();
+        assert_eq!(pool.len(), 0);
+        assert_eq!(pool.take("a", 80, 1.0), None);
+        pool.put("a", 80, 3, 2.0, 1000.0);
+        assert_eq!(pool.take("a", 80, 3.0), Some(3));
     }
 
     #[test]

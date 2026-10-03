@@ -32,7 +32,9 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   2.8 s to 1.65 s. A connection is kept only when the response was read to its exact end;
   one the server has closed is dropped, and a request that fails on a reused connection is
   sent again on a new one. POSTs, requests with a body, HTTPS and requests that set their own
-  `Connection` header are unchanged.
+  `Connection` header are unchanged. The kept connections belong to the `TorClient` that opened
+  them (closing the client drops them): a second client in the same process never takes a stream
+  the first opened.
 - **Steadier start-up on slow Snowflake proxies.** Circuits through a bridge get at
   least 7 s to build (Tor's default floor of 10 ms let a slow proxy's circuits be
   abandoned until the only bridge was disabled); the first broker request is

@@ -47,6 +47,7 @@ pub use storage::{JsStorage, JsStorageInterface, CachedJsStorage};
 use error::JsTorError;
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -324,6 +325,10 @@ impl TorClientOptions {
 pub struct TorClient {
     inner: Option<Arc<ArtiTorClient<WasmRuntime>>>,
     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
+    /// Connections kept open for this client's next requests. Per client, not per
+    /// process: another client may have different settings, and must never be
+    /// handed a stream that this one opened.
+    idle: IdleConnections,
 }
 
 #[wasm_bindgen]
@@ -358,8 +363,9 @@ impl TorClient {
         };
 
         let tls_config = Arc::clone(&self.tls_config);
+        let idle = Rc::clone(&self.idle);
         wasm_bindgen_futures::future_to_promise(async move {
-            fetch_impl(&client, &url, init, tls_config).await
+            fetch_impl(&client, &url, init, tls_config, idle).await
         })
     }
 
@@ -401,6 +407,7 @@ impl TorClient {
     #[wasm_bindgen(js_name = close)]
     pub fn close(&mut self) -> js_sys::Promise {
         self.inner = None;
+        self.idle.borrow_mut().clear();
         wasm_bindgen_futures::future_to_promise(async {
             info!("TorClient closed");
             Ok(JsValue::undefined())
@@ -565,6 +572,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     Ok(TorClient {
         inner: Some(tor_client),
         tls_config: make_tls_config(),
+        idle: Rc::new(RefCell::new(conn_pool::IdlePool::new(POOL_MAX_PER_HOST, POOL_MAX_TOTAL))),
     })
 }
 
@@ -650,9 +658,10 @@ const POOL_IDLE_MARGIN_MS: f64 = 1_000.0;
 const POOL_MAX_PER_HOST: usize = 6;
 const POOL_MAX_TOTAL: usize = 16;
 
+/// One client's idle connections (see `TorClient::idle`).
+type IdleConnections = Rc<RefCell<conn_pool::IdlePool<fetch::BoxedConn>>>;
+
 thread_local! {
-    static IDLE_CONNECTIONS: std::cell::RefCell<conn_pool::IdlePool<fetch::BoxedConn>> =
-        std::cell::RefCell::new(conn_pool::IdlePool::new(POOL_MAX_PER_HOST, POOL_MAX_TOTAL));
     static POOL_EPOCH: web_time_compat::Instant = web_time_compat::Instant::now();
 }
 
@@ -661,7 +670,7 @@ fn pool_now_ms() -> f64 {
 }
 
 /// A function that puts a finished connection back for `host:port`.
-fn release_to_pool(host: String, port: u16) -> fetch::ReleaseFn {
+fn release_to_pool(pool: IdleConnections, host: String, port: u16) -> fetch::ReleaseFn {
     Box::new(move |conn, announced_secs| {
         let now = pool_now_ms();
         let idle = match announced_secs {
@@ -669,15 +678,15 @@ fn release_to_pool(host: String, port: u16) -> fetch::ReleaseFn {
             None => POOL_IDLE_MS,
         };
         debug!("Keeping the connection to {host}:{port} for reuse (up to {:.0}s)", idle / 1000.0);
-        IDLE_CONNECTIONS.with(|pool| pool.borrow_mut().put(&host, port, conn, now, now + idle));
+        pool.borrow_mut().put(&host, port, conn, now, now + idle);
     })
 }
 
 /// A pooled connection for `host:port` that is still open, if there is one.
-async fn take_idle_connection(host: &str, port: u16) -> Option<fetch::BoxedConn> {
+async fn take_idle_connection(pool: &IdleConnections, host: &str, port: u16) -> Option<fetch::BoxedConn> {
     use futures::io::AsyncReadExt;
     loop {
-        let mut conn = IDLE_CONNECTIONS.with(|pool| pool.borrow_mut().take(host, port, pool_now_ms()))?;
+        let mut conn = pool.borrow_mut().take(host, port, pool_now_ms())?;
         // A connection the server has closed since it was put back reads as
         // ended (or as an error) at once; one that is still open has nothing to
         // read yet. Anything else (stray bytes) is not a connection to trust.
@@ -699,6 +708,7 @@ async fn fetch_impl(
     url_str: &str,
     init: JsValue,
     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
+    idle: IdleConnections,
 ) -> Result<JsValue, JsValue> {
     // Parse URL
     let url = url::Url::parse(url_str)
@@ -760,7 +770,7 @@ async fn fetch_impl(
     // A request that may keep its connection first looks for one already open.
     // Reusing skips the round trip to the far end that opening a stream costs.
     let keep_alive = fetch::wants_keep_alive(&url, &method, &headers, &request_body);
-    let pooled = if keep_alive { take_idle_connection(host, port).await } else { None };
+    let pooled = if keep_alive { take_idle_connection(&idle, host, port).await } else { None };
 
     let connect = || async {
         debug!("Connecting to {}:{}...", host, port);
@@ -770,7 +780,7 @@ async fn fetch_impl(
             .map_err(|e| JsTorError::connection(format!("Failed to connect: {}", e)).into_js_value())?;
         Ok::<fetch::BoxedConn, JsValue>(Box::new(stream))
     };
-    let release = || keep_alive.then(|| release_to_pool(host.to_owned(), port));
+    let release = || keep_alive.then(|| release_to_pool(Rc::clone(&idle), host.to_owned(), port));
 
     // Perform the HTTP request — resolves as soon as headers arrive
     let result = match pooled {
