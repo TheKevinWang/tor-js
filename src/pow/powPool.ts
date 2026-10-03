@@ -52,7 +52,8 @@ export interface PowSolverOptions {
   timeoutMs?: number;
 }
 
-export type PowSolver = (blindId: Uint8Array, seed: Uint8Array, effort: number) => Promise<PowSolution>;
+/** Solves a puzzle; aborting `signal` stops the workers and rejects. */
+export type PowSolver = (blindId: Uint8Array, seed: Uint8Array, effort: number, signal?: AbortSignal) => Promise<PowSolution>;
 
 /** Messages the pool and its workers exchange. */
 export type PowWorkerRequest = {
@@ -91,7 +92,8 @@ export function createPowSolver(options: PowSolverOptions): PowSolver {
   const create = options.createWorker ?? ((url: string) => new Worker(url) as unknown as PowWorkerLike);
   const random = options.randomBytes ?? ((n: number) => crypto.getRandomValues(new Uint8Array(n)));
 
-  return (blindId, seed, effort) => new Promise<PowSolution>((resolve, reject) => {
+  return (blindId, seed, effort, signal) => new Promise<PowSolution>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('proof-of-work solve cancelled'));
     const count = options.workers ?? defaultWorkerCount();
     const workers: PowWorkerLike[] = [];
     const failures: string[] = [];
@@ -154,6 +156,7 @@ export function createPowSolver(options: PowSolverOptions): PowSolver {
     if (alive === 0) {
       return finish(() => reject(new Error(failures.join('; ') || 'no workers')));
     }
+    signal?.addEventListener('abort', () => finish(() => reject(new Error('proof-of-work solve cancelled'))), { once: true });
     if (options.timeoutMs !== undefined) {
       timer = setTimeout(() => finish(() => reject(new Error(`proof of work not solved within ${options.timeoutMs} ms`))), options.timeoutMs);
     }

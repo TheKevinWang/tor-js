@@ -12,3 +12,5 @@ export * from '../../../src/site/frameHeaders.js';
 export * from '../../../src/site/guardState.js';
 export * from '../../../src/pow/powPool.js';
 export * from '../../../src/pow/install.js';
+export * from '../../../src/pow/powPage.js';
+export * from '../../../src/pow/powRelay.js';

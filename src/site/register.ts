@@ -14,6 +14,7 @@
 
 import type { SiteStatus } from './backend.js';
 import { prepareSpare, servePeer } from './peerPage.js';
+import { servePow, type PowPageOptions } from '../pow/powPage.js';
 import { SNOWFLAKE_WEBRTC_STUN } from '../snowflake.js';
 
 export type { SiteStatus } from './backend.js';
@@ -213,8 +214,10 @@ function startHost(opts: { script: string; name: string; config: HostConfig }): 
   // carrier (workers have none): see peerRelay.ts. Listen before anything else
   // is sent, so the first request cannot be missed.
   const onHostMessage = (event: MessageEvent) => {
-    const data = event.data as { t?: string; port?: MessagePort } | null;
+    const data = event.data as { t?: string; port?: MessagePort; options?: PowPageOptions } | null;
     if (data?.t === 'peer-request' && data.port) servePeer(data.port);
+    // The host cannot start workers (a SharedWorker), so this page solves the puzzle: src/pow/powPage.ts.
+    if (data?.t === 'pow-request' && data.port && data.options) servePow(data.port, data.options);
   };
   if (control instanceof MessagePort) control.onmessage = onHostMessage;
   else control.onmessage = onHostMessage;

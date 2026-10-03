@@ -7,6 +7,7 @@
  */
 
 import { createPowSolver, type PowSolver, type PowSolverOptions } from './powPool.js';
+import { createRemotePowSolver, type PowRelayOptions } from './powRelay.js';
 
 export interface PowSettings {
   /** The most effort this client will pay; default 2000 (arti's own cap is 10000). */
@@ -26,13 +27,24 @@ export function canSolveProofOfWork(): boolean {
 }
 
 /**
- * Install the pool. Returns a function that removes it again. Does nothing (returns a no-op) where
- * workers cannot be started, such as in a Service Worker: the Tor client then connects without
- * offering a solution, as before.
+ * Install a solver. Returns a function that removes it again.
+ *
+ * Where workers can be started (a page, a dedicated worker, Node with `createWorker`), the pool is
+ * used directly. Where they cannot (a SharedWorker has no `Worker` in Chromium), `acquirePort` asks a
+ * page to run the pool (powRelay.ts, powPage.ts). With neither, nothing is installed and the Tor
+ * client connects without offering a solution, as before; so too in a Service Worker.
  */
-export function installPowSolver(options: PowSolverOptions & PowSettings): () => void {
-  if (!options.createWorker && !canSolveProofOfWork()) return () => {};
-  const solve: PowSolver = createPowSolver(options);
+export function installPowSolver(
+  options: PowSolverOptions & PowSettings & { acquirePort?: PowRelayOptions['acquirePort'] },
+): () => void {
+  const local = !!options.createWorker || canSolveProofOfWork();
+  if (!local && !options.acquirePort) return () => {};
+  const solve: PowSolver = local
+    ? createPowSolver(options)
+    : createRemotePowSolver({
+      acquirePort: options.acquirePort!,
+      pool: { workerUrl: options.workerUrl, wasmUrl: options.wasmUrl, workers: options.workers },
+    });
   const g = globalThis as PowGlobals;
   const previous = { solve: g.__torJsPowSolve, config: g.__torJsPowConfig };
   g.__torJsPowSolve = (blindId, seed, effort) => solve(blindId, seed, effort);

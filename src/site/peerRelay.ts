@@ -47,7 +47,13 @@ export interface PageTarget {
  * that has closed never answers, hence the timeout; such targets are removed
  * from `targets` so the next request does not wait for them again.
  */
-export async function acquirePeerPort(targets: PageTarget[], timeoutMs = 3000): Promise<MessagePort> {
+export async function acquirePeerPort(
+  targets: PageTarget[],
+  timeoutMs = 3000,
+  /** What is asked of the page: the message is `${kind}-request`; `extra` is added to it. */
+  request: { kind?: 'peer' | 'pow'; extra?: Record<string, unknown> } = {},
+): Promise<MessagePort> {
+  const kind = request.kind ?? 'peer';
   for (let i = targets.length - 1; i >= 0; i--) {
     const channel = new MessageChannel();
     const ready = new Promise<boolean>((resolve) => {
@@ -60,7 +66,7 @@ export async function acquirePeerPort(targets: PageTarget[], timeoutMs = 3000): 
       };
     });
     try {
-      targets[i].post({ t: 'peer-request', port: channel.port2 }, [channel.port2]);
+      targets[i].post({ t: `${kind}-request`, ...request.extra, port: channel.port2 }, [channel.port2]);
     } catch {
       channel.port1.close();
       targets.splice(i, 1);
@@ -70,7 +76,9 @@ export async function acquirePeerPort(targets: PageTarget[], timeoutMs = 3000): 
     channel.port1.close();
     targets.splice(i, 1);
   }
-  throw new Error('no open page of the site can host a WebRTC peer connection (open the site in a tab, or use the WebSocket carrier)');
+  throw new Error(kind === 'pow'
+    ? 'no open page of the site can start the proof-of-work workers'
+    : 'no open page of the site can host a WebRTC peer connection (open the site in a tab, or use the WebSocket carrier)');
 }
 
 export interface RemotePeerOptions {

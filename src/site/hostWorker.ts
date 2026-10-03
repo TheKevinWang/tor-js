@@ -74,6 +74,10 @@ function getBackend(config: HostConfig): Promise<LocalBackend> {
         workers: o.workers,
         maxEffort: o.maxEffort,
         minEffort: o.minEffort,
+        // A SharedWorker cannot start workers: a page does it (see src/pow/powPage.ts).
+        // A page that is busy (loading, decompressing a directory snapshot) can take longer than the
+        // 3 s a WebRTC peer is given to answer, and one that does not answer is dropped from `pages`.
+        acquirePort: (extra) => acquirePeerPort(pages, 10_000, { kind: 'pow', extra }),
       });
     }
     return new LocalBackend({
