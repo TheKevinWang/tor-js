@@ -36,9 +36,19 @@ firewall or router; test that from another network (below).
 ### Proof of work is off, on purpose
 
 When a service is overloaded, proof of work makes it serve clients that solved a puzzle first. The
-browser client in this project (arti compiled to WASM) cannot solve them: arti has a solver
-(`hs-pow-full`) but it starts a native thread, which a single-threaded WASM build does not have, and
-the default build uses a stub that never offers a solution. With proof of work on, an attack would
+browser client in this project (arti compiled to WASM) cannot solve them today: arti has a solver
+(`hs-pow-full`) but its wrapper starts a native thread, which a single-threaded WASM build does not
+have, and the default build uses a stub that never offers a solution.
+
+Solving in WASM is possible, but slow. The puzzle function (Equi-X) compiles to WASM and runs, but
+only through its interpreter, because WASM cannot run generated machine code. Measured on one
+machine: 310 ms per attempt in WASM, 226 ms natively with the interpreter, 10.8 ms natively with the
+compiler that c-tor and arti use. A solution is accepted with probability 1 over the effort, and an
+attempt yields about 2.4 solutions, so an effort of E costs about E x 0.13 s of one core in WASM
+(effort 8: 1 s; 100: 13 s; 1000: 2 minutes; the client's cap is 10000), against about E x 5 ms
+natively. Running several workers divides that by the number of cores; compiling each puzzle's
+program to WASM instead of interpreting it could make a core several times faster (an estimate,
+not built). What effort a service asks for under attack depends on the attack. With proof of work on, an attack would
 therefore put exactly the visitors of the static front end at the back of the queue, while Tor
 Browser users would be served first. Without it, introduction-point rate limiting drops excess
 introductions at random, which does not favour anyone. Turn proof of work on (`--pow` in the demo,
