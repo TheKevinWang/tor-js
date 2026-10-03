@@ -215,6 +215,10 @@ using ordinary URLs (`fetch('/api/messages')`, `<form action="/login"
 method="POST">`, `<a href="/profile">`); the browser still does the HTML, CSS
 and JavaScript; only the requests the manifest routes to Tor travel over Tor.
 
+To keep the machine behind the onion service from being found or flooded, without
+slowing visits, see [SERVER-HARDENING.md](SERVER-HARDENING.md); `node
+scripts/audit-onion-origin.mjs` checks a running origin and its torrc.
+
 ```
 your-site/
   index.html, app.js, style.css, ...     # unchanged

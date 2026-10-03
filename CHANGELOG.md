@@ -16,6 +16,15 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **Server hardening for the onion service behind a site.** `SERVER-HARDENING.md` explains what
+  keeps the machine behind an onion service from being found or flooded and what each measure
+  costs a visitor; `scripts/onion-hardening.mjs` generates a hardened torrc (nothing listens but
+  the service, the origin only on loopback, introduction-point rate limiting, five introduction
+  points; proof of work stays off because the browser client cannot solve puzzles);
+  `scripts/audit-onion-origin.mjs` checks a torrc and a running origin (reachability on every
+  address, software and proxy headers, the machine's own addresses and names in responses). The
+  FlaskBB demo runs hardened and without a `Server` header. In a comparison of 16 first visits each
+  the hardened torrc was not distinguishable from a minimal one.
 - **A fresh `bootstrapUrl` snapshot now refreshes a stale saved directory.** The snapshot
   was only used when the browser had no directory saved, so a returning visitor with a
   consensus a few hours old always downloaded a new one over the bridge, which in one
