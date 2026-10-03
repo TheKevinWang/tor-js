@@ -1,0 +1,103 @@
+[package]
+name = "tor-hsclient"
+version = "0.45.0"
+authors = ["The Tor Project, Inc.", "Nick Mathewson <nickm@torproject.org>"]
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+homepage = "https://gitlab.torproject.org/tpo/core/arti/-/wikis/home"
+description = "Arti's implementation of an onion service client (tor-js patch: proof of work on wasm32 through JavaScript, see PATCH.md)"
+keywords = ["tor", "arti", "cryptography"]
+categories = ["cryptography"]
+repository = "https://gitlab.torproject.org/tpo/core/arti.git/"
+
+[features]
+default = []
+
+keymgr = ["tor-keymgr/keymgr", "__is_experimental"]
+
+# Onion service proof of work schemes
+hs-pow-full = [
+    "tor-hscrypto/hs-pow-full",
+    "tor-netdoc/hs-pow-full",
+    "tor-cell/hs-pow-full",
+    "__is_experimental",
+]
+
+full = [
+    "retry-error/full",
+    "safelog/full",
+    "tor-checkable/full",
+    "tor-circmgr/full",
+    "tor-config/full",
+    "tor-dirclient/full",
+    "tor-error/full",
+    "tor-hscrypto/full",
+    "tor-linkspec/full",
+    "tor-llcrypto/full",
+    "tor-netdir/full",
+    "tor-netdoc/full",
+    "tor-proto/full",
+    "tor-rtcompat/full",
+    "tor-basic-utils/full",
+    "tor-bytes/full",
+    "tor-cell/full",
+    "tor-keymgr/full",
+    "tor-async-utils/full",
+    "tor-persist/full",
+    "oneshot-fused-workaround/full",
+    "slotmap-careful/full",
+    "tor-memquota/full",
+    "tor-protover/full",
+    "web-time-compat/full",
+]
+__is_experimental = []
+experimental = ["keymgr", "hs-pow-full", "negotiate-extensions"]
+negotiate-extensions = ["__is_experimental"]
+
+[dependencies]
+async-trait = "0.1.54"
+cfg-if = "1.0.0"
+derive-deftly = { version = "~1.11.4", features = ["full", "beta"] }
+derive_more = { version = "2.0.1", features = ["full"] }
+educe = "0.4.22"
+either = "1"
+futures = "0.3.14"
+itertools = "0.15.0"
+oneshot-fused-workaround = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+postage = { version = "0.5.0", default-features = false, features = ["futures-traits"] }
+rand = "0.10.1"
+retry-error = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+safelog = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+slotmap-careful = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+strum = { version = "0.28.0", features = ["derive"] }
+thiserror = "2"
+tor-async-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-basic-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-bytes = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-cell = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs"] }
+tor-checkable = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-circmgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-client", "send-control-msg"] }
+tor-config = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-dirclient = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["hs-client"] }
+tor-error = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["tracing"] }
+tor-hscrypto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-keymgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+tor-linkspec = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["decode", "verbatim"] }
+tor-llcrypto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-memquota = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+tor-netdir = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-client"] }
+tor-netdoc = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-client"] }
+tor-persist = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-proto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-client", "send-control-msg"] }
+tor-protover = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-rtcompat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tracing = "0.1.36"
+web-time-compat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+
+# The WASM build hands proof-of-work puzzles to JavaScript (src/pow/v1_wasm.rs).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+send_wrapper = { version = "0.6", features = ["futures"] }

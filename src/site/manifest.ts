@@ -61,6 +61,22 @@ export interface ClientOptions {
   shell?: 'frame';
   /** URL (relative to the manifest) of the shell page. Default `tor-shell.html`. */
   shellPage?: string;
+  /**
+   * Solve an onion service's proof-of-work puzzles, in a pool of Web Workers started only when a
+   * service asks for effort. On by default where workers exist (the worker host, not the Service
+   * Worker); `false` turns it off. An object sets: `workers` (how many; default one less than the
+   * cores, 1 to 8), `maxEffort` (the most effort to pay; default 2000), `minEffort` (the least to pay
+   * whenever the service uses proof of work, default 0), `workerUrl` (URL relative to the manifest;
+   * default `tor-site-pow.js`). See src/pow/powPool.ts.
+   */
+  pow?: boolean | PowOptions;
+}
+
+export interface PowOptions {
+  workers?: number;
+  maxEffort?: number;
+  minEffort?: number;
+  workerUrl?: string;
 }
 
 export interface SiteManifest {
@@ -212,6 +228,26 @@ function parseClient(v: unknown): ClientOptions {
       if (typeof c[key] !== 'string') throw new Error(`tor-site manifest: "client.${key}" must be a string`);
       out[key] = c[key] as string;
     }
+  }
+  if (c.pow !== undefined) {
+    if (typeof c.pow === 'boolean') out.pow = c.pow;
+    else if (c.pow && typeof c.pow === 'object' && !Array.isArray(c.pow)) {
+      const pow: PowOptions = {};
+      for (const key of ['workers', 'maxEffort', 'minEffort'] as const) {
+        const v = (c.pow as Record<string, unknown>)[key];
+        if (v === undefined) continue;
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < (key === 'workers' ? 1 : 0)) {
+          throw new Error(`tor-site manifest: "client.pow.${key}" must be a whole number${key === 'workers' ? ' of at least 1' : ''}`);
+        }
+        pow[key] = v;
+      }
+      const url = (c.pow as Record<string, unknown>).workerUrl;
+      if (url !== undefined) {
+        if (typeof url !== 'string') throw new Error('tor-site manifest: "client.pow.workerUrl" must be a string');
+        pow.workerUrl = url;
+      }
+      out.pow = pow;
+    } else throw new Error('tor-site manifest: "client.pow" must be true, false or an object');
   }
   if (c.host !== undefined) {
     if (c.host !== 'auto' && c.host !== 'service-worker') {

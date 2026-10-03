@@ -4529,6 +4529,9 @@ name = "send_wrapper"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
+dependencies = [
+ "futures-core",
+]
 
 [[package]]
 name = "serde"
@@ -6286,7 +6289,6 @@ dependencies = [
 [[package]]
 name = "tor-hsclient"
 version = "0.45.0"
-source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
 dependencies = [
  "async-trait",
  "cfg-if",
@@ -6296,11 +6298,13 @@ dependencies = [
  "either",
  "futures",
  "itertools 0.15.0",
+ "js-sys",
  "oneshot-fused-workaround 0.7.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
  "postage",
  "rand 0.10.2",
  "retry-error 0.13.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
  "safelog 0.9.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "send_wrapper",
  "slotmap-careful 0.8.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
  "strum",
  "thiserror 2.0.20",
@@ -6325,6 +6329,8 @@ dependencies = [
  "tor-protover 0.45.0",
  "tor-rtcompat 0.45.0",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-time-compat 0.2.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
 ]
 

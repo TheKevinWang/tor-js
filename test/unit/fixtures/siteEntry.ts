@@ -10,3 +10,5 @@ export * from '../../../src/site/inject.js';
 export * from '../../../src/site/frame.js';
 export * from '../../../src/site/frameHeaders.js';
 export * from '../../../src/site/guardState.js';
+export * from '../../../src/pow/powPool.js';
+export * from '../../../src/pow/install.js';

@@ -16,6 +16,7 @@
 
 import { setWasmUrl } from '../wasm.js';
 import { parseManifest } from './manifest.js';
+import { installPowSolver } from '../pow/install.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { serveBackend } from './rpc.js';
 import { acquirePeerPort, createRemotePeerFactory, type PageTarget } from './peerRelay.js';
@@ -61,7 +62,20 @@ function getBackend(config: HostConfig): Promise<LocalBackend> {
     const res = await fetch(config.manifestUrl, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`cannot load ${config.manifestUrl}: HTTP ${res.status}`);
     const manifest = parseManifest(await res.json());
-    setWasmUrl(new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', config.manifestUrl).href);
+    const wasmUrl = new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', config.manifestUrl).href;
+    setWasmUrl(wasmUrl);
+    // Solve proof-of-work puzzles when a service asks for effort (workers start only then).
+    const pow = manifest.client.pow;
+    if (pow !== false) {
+      const o = typeof pow === 'object' ? pow : {};
+      installPowSolver({
+        workerUrl: new URL(o.workerUrl ?? 'tor-site-pow.js', config.manifestUrl).href,
+        wasmUrl,
+        workers: o.workers,
+        maxEffort: o.maxEffort,
+        minEffort: o.minEffort,
+      });
+    }
     return new LocalBackend({
       manifest,
       manifestUrl: config.manifestUrl,

@@ -37,9 +37,26 @@ describe('torrcLines', () => {
     assert.ok(has('HiddenServiceNumIntroductionPoints 5'))
   })
 
-  test('proof of work is off unless asked for, because the browser client cannot solve puzzles', () => {
-    assert.ok(has('HiddenServicePoWDefensesEnabled 0'))
-    assert.ok(torrcLines({ ...base, pow: true }).includes('HiddenServicePoWDefensesEnabled 1'))
+  test('proof of work is on, with conservative queue limits: 25 a second, bursts of 100', () => {
+    assert.ok(has('HiddenServicePoWDefensesEnabled 1'))
+    assert.ok(has('HiddenServicePoWQueueRate 25'))
+    assert.ok(has('HiddenServicePoWQueueBurst 100'))
+  })
+
+  test('the queue limits can be changed, and proof of work turned off, which leaves out the limits', () => {
+    const custom = torrcLines({ ...base, powQueueRate: 10, powQueueBurst: 40 })
+    assert.ok(custom.includes('HiddenServicePoWQueueRate 10') && custom.includes('HiddenServicePoWQueueBurst 40'))
+    const off = torrcLines({ ...base, pow: false })
+    assert.ok(off.includes('HiddenServicePoWDefensesEnabled 0'))
+    assert.ok(!off.some((l) => /PoWQueue/.test(l)))
+  })
+
+  test('nonsense queue limits are refused', () => {
+    for (const bad of [{ powQueueRate: 0 }, { powQueueRate: 2.5 }, { powQueueBurst: -1 }, { powQueueRate: '25' }]) {
+      assert.throws(() => torrcLines({ ...base, ...bad }), /must be a whole number of at least 1/, JSON.stringify(bad))
+    }
+    assert.throws(() => torrcLines({ ...base, powQueueRate: 50, powQueueBurst: 10 }), /at least powQueueRate/)
+    assert.doesNotThrow(() => torrcLines({ ...base, powQueueRate: 50, powQueueBurst: 50 }))
   })
 
   test('logs go to the console with addresses scrubbed, and Windows paths use forward slashes', () => {
@@ -81,6 +98,7 @@ describe('isLoopbackTarget', () => {
 })
 
 describe('analyzeTorrc', () => {
+  const POW = 'HiddenServicePoWDefensesEnabled 1\nHiddenServicePoWQueueRate 25\nHiddenServicePoWQueueBurst 100'
   const failing = (text) => messages(analyzeTorrc(text), 'fail')
   const warning = (text) => messages(analyzeTorrc(text), 'warn')
 
@@ -106,7 +124,7 @@ describe('analyzeTorrc', () => {
     assert.match(failing('SafeLogging 0').join(), /SafeLogging/)
     assert.match(warning('Log notice file /var/log/tor/notices.log').join(), /file/)
     assert.match(warning('Log debug stdout').join(), /debug/)
-    assert.deepEqual(warning('Log notice stdout\nSocksPort 0\nHiddenServiceEnableIntroDoSDefense 1\nHiddenServicePort 80 127.0.0.1:80'), [])
+    assert.deepEqual(warning(`Log notice stdout\nSocksPort 0\nHiddenServiceEnableIntroDoSDefense 1\nHiddenServicePort 80 127.0.0.1:80\n${POW}`), [])
   })
 
   test('a listening SOCKS port, an unauthenticated control port and missing flood protection are reported', () => {
@@ -117,10 +135,29 @@ describe('analyzeTorrc', () => {
     assert.match(warning('SocksPort 0').join('\n'), /rate limiting is off/)
   })
 
-  test('proof of work is flagged as a trade-off, not an error', () => {
-    const found = analyzeTorrc('SocksPort 0\nHiddenServicePort 80 127.0.0.1:80\nHiddenServicePoWDefensesEnabled 1')
-    assert.match(messages(found, 'warn').join('\n'), /cannot solve puzzles/)
+  test('proof of work with sensible queue limits is fine', () => {
+    const found = analyzeTorrc(`SocksPort 0\nHiddenServicePort 80 127.0.0.1:80\n${POW}`)
+    assert.match(messages(found, 'ok').join('\n'), /proof of work is on, handling at most 25 introductions a second \(bursts of 100\)/)
+    assert.doesNotMatch(messages(found, 'warn').join('\n'), /proof of work/)
     assert.deepEqual(messages(found, 'fail'), [])
+  })
+
+  test("proof of work without queue limits warns that Tor's defaults assume a big server", () => {
+    const found = analyzeTorrc('SocksPort 0\nHiddenServicePort 80 127.0.0.1:80\nHiddenServicePoWDefensesEnabled 1')
+    assert.match(messages(found, 'warn').join('\n'), /without HiddenServicePoWQueueRate and HiddenServicePoWQueueBurst/)
+    assert.deepEqual(messages(found, 'fail'), [])
+  })
+
+  test('queue limits that make no sense fail', () => {
+    const on = 'SocksPort 0\nHiddenServicePort 80 127.0.0.1:80\nHiddenServicePoWDefensesEnabled 1\n'
+    assert.match(messages(analyzeTorrc(`${on}HiddenServicePoWQueueRate 50\nHiddenServicePoWQueueBurst 10`), 'fail').join(), /below HiddenServicePoWQueueRate/)
+    assert.match(messages(analyzeTorrc(`${on}HiddenServicePoWQueueRate fast\nHiddenServicePoWQueueBurst 10`), 'fail').join(), /not whole numbers/)
+    assert.match(messages(analyzeTorrc(`${on}HiddenServicePoWQueueRate 0\nHiddenServicePoWQueueBurst 10`), 'fail').join(), /not whole numbers/)
+  })
+
+  test('proof of work off is reported, as a warning', () => {
+    assert.match(messages(analyzeTorrc('SocksPort 0\nHiddenServicePort 80 127.0.0.1:80'), 'warn').join('\n'), /proof of work is off/)
+    assert.match(messages(analyzeTorrc('SocksPort 0\nHiddenServicePoWDefensesEnabled 0\nHiddenServicePort 80 127.0.0.1:80'), 'warn').join('\n'), /proof of work is off/)
   })
 
   test('comments and blank lines are ignored, and the last value of a setting wins', () => {

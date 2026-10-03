@@ -34,9 +34,17 @@ const LOOPBACK = /^(127\.\d+\.\d+\.\d+|localhost|\[?::1\]?)$/i
  *  - introduction-point rate limiting makes the introduction points drop excess INTRODUCE
  *    requests during a flood, and only then (25 a second per point, bursts of 200, Tor's
  *    own defaults); more introduction points mean a flood has to cover more of them;
- *  - proof of work is OFF unless asked for: under attack it prioritises clients that solve
- *    puzzles, and the browser client here (arti in WASM) cannot, so enabling it would put
- *    exactly the visitors of a static-site front end at the back of the queue.
+ *  - proof of work is ON by default: when the service is overloaded it serves the clients that
+ *    solved a puzzle first. The browser client here solves them in Web Workers (src/pow/), at about
+ *    0.13 s of one worker per unit of effort, so a flood that pushes the effort up costs visitors
+ *    seconds to minutes instead of shutting them out. With the service idle no puzzle is asked for,
+ *    and nothing is solved. The queue limits say when it is overloaded: it handles at most
+ *    `powQueueRate` introduction requests a second, bursts up to `powQueueBurst`, and raises the
+ *    effort it asks for when requests arrive faster than that. Each request is a new visitor
+ *    connecting, so the defaults here (25 a second, burst 100: some two million new visitors a day)
+ *    are far above any real traffic and far below what a small origin can serve in requests; Tor's
+ *    own defaults (250 and 2500) assume a big server. Lower numbers engage the defence sooner and
+ *    cost visitors effort sooner.
  */
 export function torrcLines({
   dataDir,
@@ -44,7 +52,9 @@ export function torrcLines({
   target = '127.0.0.1:8000',
   virtualPort = 80,
   introPoints = 5,
-  pow = false,
+  pow = true,
+  powQueueRate = 25,
+  powQueueBurst = 100,
 }) {
   if (!dataDir || !hsDir) throw new Error('torrcLines: dataDir and hsDir are required')
   if (!isLoopbackTarget(target)) {
@@ -53,6 +63,10 @@ export function torrcLines({
   if (!Number.isInteger(introPoints) || introPoints < 3 || introPoints > 20) {
     throw new Error('torrcLines: introPoints must be between 3 and 20')
   }
+  for (const [name, value] of [['powQueueRate', powQueueRate], ['powQueueBurst', powQueueBurst]]) {
+    if (!Number.isInteger(value) || value < 1) throw new Error(`torrcLines: ${name} must be a whole number of at least 1`)
+  }
+  if (powQueueBurst < powQueueRate) throw new Error('torrcLines: powQueueBurst must be at least powQueueRate')
   const dir = (p) => p.replaceAll('\\', '/')
   return [
     `DataDirectory ${dir(dataDir)}`,
@@ -73,6 +87,7 @@ export function torrcLines({
     'HiddenServiceEnableIntroDoSRatePerSec 25',
     'HiddenServiceEnableIntroDoSBurstPerSec 200',
     `HiddenServicePoWDefensesEnabled ${pow ? 1 : 0}`,
+    ...(pow ? [`HiddenServicePoWQueueRate ${powQueueRate}`, `HiddenServicePoWQueueBurst ${powQueueBurst}`] : []),
   ]
 }
 
@@ -143,7 +158,19 @@ export function analyzeTorrc(text) {
   else out.push(finding('warn', 'introduction-point rate limiting is off (HiddenServiceEnableIntroDoSDefense 1 costs a normal visitor nothing)'))
 
   if (on('hiddenservicepowdefensesenabled')) {
-    out.push(finding('warn', 'proof of work is on: under attack, visitors from the browser client (which cannot solve puzzles) queue behind those who can; fine if most visitors use Tor Browser'))
+    const rate = values.get('hiddenservicepowqueuerate')
+    const burst = values.get('hiddenservicepowqueueburst')
+    if (rate === undefined || burst === undefined) {
+      out.push(finding('warn', "proof of work is on without HiddenServicePoWQueueRate and HiddenServicePoWQueueBurst: Tor's defaults (250 and 2500 a second) assume a large server; set them to what your origin can serve"))
+    } else if (!/^\d+$/.test(rate) || !/^\d+$/.test(burst) || Number(rate) < 1) {
+      out.push(finding('fail', `proof-of-work queue limits are not whole numbers (rate ${rate}, burst ${burst})`))
+    } else if (Number(burst) < Number(rate)) {
+      out.push(finding('fail', `HiddenServicePoWQueueBurst (${burst}) is below HiddenServicePoWQueueRate (${rate})`))
+    } else {
+      out.push(finding('ok', `proof of work is on, handling at most ${rate} introductions a second (bursts of ${burst}) before it asks for effort`))
+    }
+  } else {
+    out.push(finding('warn', "proof of work is off: a flood is limited only by the introduction points' rate limit, which does not favour anyone"))
   }
 
   const intro = Number(values.get('hiddenservicenumintroductionpoints') ?? 3)

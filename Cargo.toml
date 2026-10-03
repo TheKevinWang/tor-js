@@ -13,6 +13,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/tor-js-wasm", "crates/tor-js-gateway"]
+# Vendored patches of dependencies (see the [patch] section); not members.
+exclude = ["crates/patches"]
 default-members = ["crates/tor-js-gateway"]
 
 # Applies to both crates. lto/codegen-units shrink the WASM binary ~20% before
@@ -39,3 +41,10 @@ opt-level = 2
 [patch.crates-io]
 webrtc-sctp = { git = "https://github.com/ethereum/kps.git", rev = "a73a0a8f9e4f76f3b89ba1155562ec836bcf3f3b" }
 webrtc = { git = "https://github.com/ethereum/kps.git", rev = "4982e1c1cdce3baa3f703a746367a5e53ca64928" }
+
+# tor-js patch of arti's onion service client: on wasm32 the proof-of-work puzzle is solved by
+# JavaScript (a pool of Web Workers) instead of an operating-system thread. See
+# crates/patches/tor-hsclient/PATCH.md. Keep in sync with the arti revision pinned in
+# crates/tor-js-wasm/Cargo.toml.
+[patch."https://github.com/voltrevo/arti"]
+tor-hsclient = { path = "crates/patches/tor-hsclient" }

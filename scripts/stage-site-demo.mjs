@@ -18,6 +18,7 @@ const files = [
   ['dist/site/tor-site-sw.js', 'tor-site-sw.js', true],
   ['dist/site/tor-site.js', 'tor-site.js', true],
   ['dist/site/tor-site-host.js', 'tor-site-host.js', true],
+  ['dist/site/tor-site-pow.js', 'tor-site-pow.js', true],
   ['dist/tor_js_bg.wasm', 'tor_js_bg.wasm', true],
   // A directory snapshot makes the first visit faster; the demo works without it.
   ['website/public/bootstrap.zip.zst', 'bootstrap.zip.zst', false],

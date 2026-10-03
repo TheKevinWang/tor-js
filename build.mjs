@@ -116,6 +116,8 @@ export async function buildSiteBundles({ outDir }) {
     'tor-site-sw.js': 'src/site/sw.ts',
     'tor-site.js': 'src/site/page.ts',
     'tor-site-host.js': 'src/site/hostWorker.ts',
+    // Solves proof-of-work puzzles for the host (a Web Worker; see src/pow/powPool.ts).
+    'tor-site-pow.js': 'src/pow/powWorker.ts',
   };
   const sizes = {};
   for (const [out, entry] of Object.entries(entries)) {
