@@ -199,6 +199,9 @@ name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "arti-client"
@@ -288,6 +291,7 @@ dependencies = [
  "tor-guardmgr 0.45.0",
  "tor-hsclient",
  "tor-hscrypto 0.45.0",
+ "tor-hsservice",
  "tor-keymgr 0.45.0",
  "tor-linkspec 0.45.0",
  "tor-llcrypto 0.45.0",
@@ -588,6 +592,15 @@ dependencies = [
  "radium",
  "tap",
  "wyz",
+]
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -1488,6 +1501,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "dynasm"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd358e74d2f8d71a11b7a2c51c67ad5df3de06003b0596875e47bc09126c894e"
+dependencies = [
+ "bitflags 2.13.2",
+ "byteorder",
+ "lazy_static",
+ "proc-macro-error3",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "dynasmrt"
+version = "5.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6efe03f6bd356ae85eeea7ee14c2bf54e664a949d089d238364b5a99afbc4116"
+dependencies = [
+ "byteorder",
+ "dynasm",
+ "fnv",
+ "memmap2",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1619,6 +1659,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "equix"
+version = "0.7.1"
+source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
+dependencies = [
+ "arrayvec",
+ "hashx",
+ "num-traits",
+ "thiserror 2.0.20",
+ "visibility",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1723,6 +1775,12 @@ name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
+
+[[package]]
+name = "fixed-capacity-vec"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b31a14f5ee08ed1a40e1252b35af18bed062e3f39b69aab34decde36bc43e40"
 
 [[package]]
 name = "flate2"
@@ -2045,6 +2103,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "growable-bloom-filter"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d174ccb4ba660d431329e7f0797870d0a4281e36353ec4b4a3c5eab6c2cfb6f1"
+dependencies = [
+ "serde",
+ "serde_bytes",
+ "serde_derive",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2081,6 +2151,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "hashx"
+version = "0.9.1"
+source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
+dependencies = [
+ "arrayvec",
+ "blake2",
+ "dynasmrt",
+ "fixed-capacity-vec",
+ "hex",
+ "rand_core 0.10.1",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2663,6 +2747,16 @@ checksum = "733a844dbd6fef128e98cb4487b887cb55454d92cd9994b1bafe004fabbe670c"
 dependencies = [
  "serde",
  "ucd-trie",
+]
+
+[[package]]
+name = "k12"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4dc5fdb62af2f520116927304f15d25b3c2667b4817b90efdc045194c912c54"
+dependencies = [
+ "digest 0.10.7",
+ "sha3 0.10.9",
 ]
 
 [[package]]
@@ -3608,6 +3702,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error-attr3"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e564d14133360e1ae169ffde5da25881b5fa47261665b8e5713c212c27799da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error3"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f0d4471b3436c22106b21913b1dda531558918ae9b7ec55d58aa84b43552233"
+dependencies = [
+ "proc-macro-error-attr3",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4443,6 +4559,16 @@ dependencies = [
  "js-sys",
  "serde",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -6237,10 +6363,14 @@ name = "tor-hscrypto"
 version = "0.45.0"
 source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
 dependencies = [
+ "arrayvec",
+ "blake2",
+ "cipher 0.5.2",
  "data-encoding",
  "derive-deftly",
  "derive_more",
  "digest 0.10.7",
+ "equix",
  "hex",
  "humantime",
  "itertools 0.15.0",
@@ -6258,6 +6388,69 @@ dependencies = [
  "tor-llcrypto 0.45.0",
  "tor-memquota 0.45.0",
  "tor-units 0.45.0",
+ "void",
+ "web-time-compat 0.2.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "zeroize",
+]
+
+[[package]]
+name = "tor-hsservice"
+version = "0.45.0"
+source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
+dependencies = [
+ "amplify",
+ "arrayvec",
+ "async-trait",
+ "base64ct",
+ "cfg-if",
+ "derive-deftly",
+ "derive_builder_fork_arti",
+ "derive_more",
+ "digest 0.10.7",
+ "educe",
+ "equix",
+ "fs-mistrust 0.15.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "futures",
+ "growable-bloom-filter",
+ "hex",
+ "humantime",
+ "itertools 0.15.0",
+ "k12",
+ "num-traits",
+ "once_cell",
+ "oneshot-fused-workaround 0.7.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "postage",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "retry-error 0.13.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "safelog 0.9.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
+ "serde",
+ "serde_with",
+ "strum",
+ "thiserror 2.0.20",
+ "tor-async-utils 0.45.0",
+ "tor-basic-utils 0.45.0",
+ "tor-bytes 0.45.0",
+ "tor-cell 0.45.0",
+ "tor-checkable 0.45.0",
+ "tor-circmgr 0.45.0",
+ "tor-config 0.45.0",
+ "tor-config-path 0.45.0",
+ "tor-dirclient 0.45.0",
+ "tor-error 0.45.0",
+ "tor-hscrypto 0.45.0",
+ "tor-keymgr 0.45.0",
+ "tor-linkspec 0.45.0",
+ "tor-llcrypto 0.45.0",
+ "tor-log-ratelim 0.45.0",
+ "tor-netdir 0.45.0",
+ "tor-netdoc 0.45.0",
+ "tor-persist 0.45.0",
+ "tor-proto 0.45.0",
+ "tor-protover 0.45.0",
+ "tor-relay-selection 0.45.0",
+ "tor-rtcompat 0.45.0",
+ "tracing",
  "void",
  "web-time-compat 0.2.1 (git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112)",
 ]
@@ -6293,6 +6486,7 @@ dependencies = [
  "tor-circmgr 0.45.0",
  "tor-dirmgr 0.45.0",
  "tor-general-addr 0.45.0",
+ "tor-hscrypto 0.45.0",
  "tor-llcrypto 0.45.0",
  "tor-netdoc 0.45.0",
  "tor-persist 0.45.0",
@@ -6923,6 +7117,7 @@ name = "tor-persist"
 version = "0.45.0"
 source = "git+https://github.com/voltrevo/arti?rev=cc09d69156011fd80cafa6cb57fb682062f4d112#cc09d69156011fd80cafa6cb57fb682062f4d112"
 dependencies = [
+ "amplify",
  "derive-deftly",
  "derive_more",
  "extend",
@@ -8404,6 +8599,12 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yasna"

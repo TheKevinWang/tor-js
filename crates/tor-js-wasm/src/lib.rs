@@ -35,6 +35,7 @@
 mod error;
 mod fast_bootstrap;
 mod fetch;
+mod pow;
 mod bridges;
 mod conn_pool;
 mod runtime;
@@ -136,6 +137,35 @@ pub fn set_log_level(level: String) -> Result<(), JsValue> {
             Err(JsValue::from_str("init() must be called before setLogLevel()"))
         }
     })
+}
+
+/// Solve an onion service's proof-of-work puzzle (see `pow.rs`).
+///
+/// Meant to be called from a Web Worker that has loaded this WASM and is
+/// dedicated to the puzzle: it runs until it finds a solution, which can take
+/// minutes at a high effort, and the caller ends it by terminating the worker.
+/// `blind_id` and `seed` are 32 bytes each, `start_nonce` 16 (a different random one
+/// for each worker of a pool). Returns `{ nonce, effort, seedHead, proof }`, the
+/// fields of the solution as `Uint8Array`s (and the effort as a number).
+#[wasm_bindgen(js_name = powSolveV1)]
+pub fn pow_solve_v1(blind_id: &[u8], seed: &[u8], effort: u32, start_nonce: &[u8]) -> Result<JsValue, JsValue> {
+    fn array<const N: usize>(what: &str, bytes: &[u8]) -> Result<[u8; N], JsValue> {
+        <[u8; N]>::try_from(bytes).map_err(|_| JsValue::from_str(&format!("{what} must be {N} bytes, got {}", bytes.len())))
+    }
+    let parts = pow::solve_v1(
+        array::<32>("blind id", blind_id)?,
+        array::<32>("seed", seed)?,
+        effort,
+        array::<16>("start nonce", start_nonce)?,
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
+    let out = js_sys::Object::new();
+    let set = |key: &str, value: JsValue| js_sys::Reflect::set(&out, &JsValue::from_str(key), &value).map(|_| ());
+    set("nonce", js_sys::Uint8Array::from(&parts.nonce[..]).into())?;
+    set("effort", JsValue::from_f64(f64::from(parts.effort)))?;
+    set("seedHead", js_sys::Uint8Array::from(&parts.seed_head[..]).into())?;
+    set("proof", js_sys::Uint8Array::from(&parts.proof[..]).into())?;
+    Ok(out.into())
 }
 
 /// Set a callback function to receive log messages
