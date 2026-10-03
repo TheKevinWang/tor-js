@@ -16,6 +16,14 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **A fresh `bootstrapUrl` snapshot now refreshes a stale saved directory.** The snapshot
+  was only used when the browser had no directory saved, so a returning visitor with a
+  consensus a few hours old always downloaded a new one over the bridge, which in one
+  session kept failing for two minutes until the host gave up ("Tor was not ready after
+  120s"). The snapshot is now fetched when the saved consensus is no longer fresh, and
+  stored if its consensus is newer; a fresh saved consensus still skips it, and so does a
+  snapshot that is no newer. The FlaskBB demo makes a new snapshot when its copy is over
+  an hour old. A site whose snapshot is stale gets no help from this.
 - **Connection reuse for `fetch` over plain HTTP.** A GET or HEAD without a body keeps its
   Tor stream after the response and the next request to the same host uses it, instead of
   opening a new stream (a round trip across the whole circuit for an onion service) for

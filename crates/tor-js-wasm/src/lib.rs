@@ -38,6 +38,7 @@ mod fetch;
 mod bridges;
 mod conn_pool;
 mod runtime;
+mod snapshot_policy;
 mod snowflake;
 mod storage;
 

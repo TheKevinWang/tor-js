@@ -192,7 +192,10 @@ new TorClient({ snowflake: true, bootstrapUrl: new URL('bootstrap.zip.zst', loca
 ```
 
 Regenerate it regularly (the consensus in it is valid for 3 hours; an older
-snapshot still saves the microdescriptor download). See
+snapshot still saves the microdescriptor download). A returning visitor uses it
+too: when the consensus saved in their browser is no longer fresh and the
+snapshot holds a newer one, the snapshot replaces it, so a visit after hours away
+does not wait for a consensus download over the bridge. See
 [`website/onion.html`](website/onion.html) for a complete page and
 [`examples/tor-fetch-onion-snowflake.js`](examples/tor-fetch-onion-snowflake.js)
 for Node.

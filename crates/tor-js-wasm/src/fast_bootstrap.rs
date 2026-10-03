@@ -17,6 +17,7 @@
 //! Writes parsed documents directly to [`CachedJsStorage`] so the Tor
 //! client can skip fetching directory data from the network on first boot.
 
+use crate::snapshot_policy::{self, Lifetime};
 use crate::storage::CachedJsStorage;
 use arti_client::storage::KeyValueStore;
 use digest::Digest;
@@ -50,19 +51,39 @@ fn maybe_decompress_zstd(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     Ok(decompressed)
 }
 
-/// Check if storage is empty and, if so, populate from the fast bootstrap callback.
+/// The newest consensus the directory cache holds, if any.
+fn newest_stored_consensus(storage: &CachedJsStorage) -> Result<Option<Lifetime>, wasm_bindgen::JsValue> {
+    let keys = storage.keys("dir:consensus:").map_err(|e| js_err(format_args!("storage error: {}", e)))?;
+    let mut lifetimes = Vec::new();
+    for key in keys {
+        let value = storage.get(&key).map_err(|e| js_err(format_args!("storage error: {}", e)))?;
+        if let Some(l) = value.as_deref().and_then(snapshot_policy::lifetime_of_stored) {
+            lifetimes.push(l);
+        }
+    }
+    Ok(snapshot_policy::newest(lifetimes))
+}
+
+/// Populate the directory cache from the fast bootstrap callback when that helps:
+/// when the cache is empty, or when the consensus in it is no longer fresh and the
+/// hosted snapshot holds a newer one. A cache that is still fresh is left alone,
+/// and so is one that is stale when the snapshot is no newer (see snapshot_policy.rs).
 pub async fn maybe_fast_bootstrap(
     storage: &CachedJsStorage,
     callback: js_sys::Function,
 ) -> Result<(), wasm_bindgen::JsValue> {
-    // Check if we already have a consensus
-    let consensus_keys = storage
-        .keys("dir:consensus:")
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("storage error: {}", e)))?;
+    let stored = newest_stored_consensus(storage)?;
+    let now = (js_sys::Date::now() / 1000.0) as u64;
 
-    if !consensus_keys.is_empty() {
-        info!("Fast bootstrap: storage already has consensus, skipping");
+    if !snapshot_policy::should_fetch(stored.as_ref(), now) {
+        info!("Fast bootstrap: storage already has a fresh consensus, skipping");
         return Ok(());
+    }
+    if let Some(s) = &stored {
+        info!(
+            "Fast bootstrap: the stored consensus (valid after {}) is no longer fresh; looking at the snapshot",
+            s.valid_after
+        );
     }
 
     info!("Fast bootstrap: fetching bootstrap.zip...");
@@ -111,6 +132,14 @@ pub async fn maybe_fast_bootstrap(
     let valid_after_secs = system_time_to_secs(lifetime.valid_after());
     let fresh_until_secs = system_time_to_secs(lifetime.fresh_until());
     let valid_until_secs = system_time_to_secs(lifetime.valid_until());
+
+    if !snapshot_policy::should_use(stored.as_ref(), valid_after_secs) {
+        info!(
+            "Fast bootstrap: the snapshot (valid after {}) is no newer than the stored consensus; keeping the stored one",
+            valid_after_secs
+        );
+        return Ok(());
+    }
 
     store_consensus(
         storage,
