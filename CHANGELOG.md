@@ -16,11 +16,22 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `dist/site/tor-site-sw.js`, `tor-site-host.js` and `tor-site.js`; demo in
   `website/public/site-demo/`. See the README section "Static sites with an
   onion backend".
+- **The browser client solves onion services' proof-of-work puzzles, and the demo service turns
+  proof of work on.** arti solves puzzles on an operating-system thread, which WASM lacks; a vendored
+  patch of `tor-hsclient` (`crates/patches/tor-hsclient`) hands them to JavaScript, which solves them in
+  a pool of Web Workers running the same WASM (`tor-site-pow.js`, one fewer than the cores, started only
+  while a puzzle is being solved). Where the Tor client is in a SharedWorker, which has no `Worker` in
+  Chromium, an attached page runs the pool. Idle services ask for no effort and cost nothing. Manifest
+  setting `client.pow` (`false`, or `workers`, `maxEffort` default 2000, `minEffort`, `workerUrl`).
+  Checked against the real Tor program: a solved puzzle is accepted, a corrupted one gets no answer. An
+  effort of 100 took 3 to 55 s in a browser with 8 workers. The generated torrc has proof of work on
+  with `HiddenServicePoWQueueRate 25` and `HiddenServicePoWQueueBurst 100` (Tor's defaults are 250 and
+  2500, for large servers); the demo has `--no-pow`. WASM +43 kB (+17 kB gzip).
 - **Server hardening for the onion service behind a site.** `SERVER-HARDENING.md` explains what
   keeps the machine behind an onion service from being found or flooded and what each measure
   costs a visitor; `scripts/onion-hardening.mjs` generates a hardened torrc (nothing listens but
   the service, the origin only on loopback, introduction-point rate limiting, five introduction
-  points; proof of work stays off because the browser client cannot solve puzzles);
+  points; proof of work, see the entry above);
   `scripts/audit-onion-origin.mjs` checks a torrc and a running origin (reachability on every
   address, software and proxy headers, the machine's own addresses and names in responses). The
   FlaskBB demo runs hardened and without a `Server` header. In a comparison of 16 first visits each

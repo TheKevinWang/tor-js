@@ -366,6 +366,30 @@ list the adapter's own files as `static` when everything else goes to Tor; a fir
 visit to any deep link needs a `404.html` shell; multi-page sites need `"host":
 "service-worker"`.
 
+### Onion services that ask for proof of work
+
+An onion service under attack can ask every visitor for a solution to a puzzle (proof of work)
+before it takes their connection request, and serve the ones who did the most work first. The
+adapter's Tor client solves these puzzles, so a static site in front of such a service keeps
+working during a flood, at a cost of CPU time. With the service idle it asks for no effort and
+nothing is solved: no worker is started and a normal visit is unchanged.
+
+The solving runs in Web Workers that load the same WASM (`tor-site-pow.js`, which the usual
+`/tor-site*.js` pattern in `static` already covers), one fewer than the cores, between 1 and 8, and
+only while a puzzle is being solved. Where the Tor client lives in a SharedWorker (the default host,
+and the frame shell), which cannot start workers, an attached page runs them. In the Service Worker host
+nothing can, and the client connects without offering a solution, as before. One unit of effort costs
+about 0.13 s of one worker, so an effort of 100 takes seconds and 1000 minutes; the client pays at most
+2000 (arti's own cap is 10000).
+
+    "client": { "pow": { "workers": 4, "maxEffort": 2000, "minEffort": 0 } }
+
+`pow` is on by default; `false` turns it off. `minEffort` is the least to pay whenever the service uses
+proof of work, even when it asks for none (a client that wants priority can pay for it; it is also how
+the solver is tested against a service that is not under attack). The service side, and what it costs,
+is in [SERVER-HARDENING.md](SERVER-HARDENING.md). This needs the patched `tor-hsclient` in
+`crates/patches/` (see its `PATCH.md`); it adds about 17 kB gzip to the WASM.
+
 ### WebRTC carrier in the site adapter
 
 `"client": { "snowflake": "webrtc" }` sends the site's Tor traffic through a

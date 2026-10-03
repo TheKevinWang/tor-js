@@ -30,30 +30,52 @@ firewall or router; test that from another network (below).
 | Static files from the static host, not the onion service | faster | n/a | yes (the adapter's `static` list) |
 | Cache headers on dynamic pages that can be cached | faster | n/a | no |
 | Several instances behind OnionBalance | none in the data path (see below) | n/a | no |
-| Proof of work (`HiddenServicePoWDefensesEnabled`) | none when not under attack | warns when on | **off** (see below) |
+| Proof of work (`HiddenServicePoWDefensesEnabled`, queue rate 25, burst 100) | none when not under attack; seconds to minutes of CPU when it asks for effort | yes (limits checked) | yes (`--no-pow` turns it off) |
 | A second, private onion service behind a public one | one more Tor leg on every request | n/a | no, not recommended |
 
-### Proof of work is off, on purpose
+### Proof of work
 
-When a service is overloaded, proof of work makes it serve clients that solved a puzzle first. The
-browser client in this project (arti compiled to WASM) cannot solve them today: arti has a solver
-(`hs-pow-full`) but its wrapper starts a native thread, which a single-threaded WASM build does not
-have, and the default build uses a stub that never offers a solution.
+When a service is overloaded, proof of work makes it serve first the visitors who solved a puzzle,
+which makes a flood cost the attacker CPU. It is on in the demo, with conservative limits:
 
-Solving in WASM is possible, but slow. The puzzle function (Equi-X) compiles to WASM and runs, but
-only through its interpreter, because WASM cannot run generated machine code. Measured on one
-machine: 310 ms per attempt in WASM, 226 ms natively with the interpreter, 10.8 ms natively with the
-compiler that c-tor and arti use. A solution is accepted with probability 1 over the effort, and an
-attempt yields about 2.4 solutions, so an effort of E costs about E x 0.13 s of one core in WASM
-(effort 8: 1 s; 100: 13 s; 1000: 2 minutes; the client's cap is 10000), against about E x 5 ms
-natively. Running several workers divides that by the number of cores; compiling each puzzle's
-program to WASM instead of interpreting it could make a core several times faster (an estimate,
-not built). What effort a service asks for under attack depends on the attack. With proof of work on, an attack would
-therefore put exactly the visitors of the static front end at the back of the queue, while Tor
-Browser users would be served first. Without it, introduction-point rate limiting drops excess
-introductions at random, which does not favour anyone. Turn proof of work on (`--pow` in the demo,
-`pow: true` in `torrcLines`) only if most of your visitors use Tor Browser, or after the client can
-solve.
+    HiddenServicePoWDefensesEnabled 1
+    HiddenServicePoWQueueRate 25
+    HiddenServicePoWQueueBurst 100
+
+The queue handles at most `Rate` introduction requests a second (bursts up to `Burst`) and raises the
+effort it asks for when requests arrive faster than that. Each request is one new visitor connecting,
+and every visitor then makes tens of requests to the origin, so 25 a second (some two million new
+visitors a day) is far above real traffic and well below what a small origin can serve; Tor's own
+defaults, 250 and 2500, assume a big server. Lower numbers engage the defence sooner, which costs
+visitors effort sooner. With the service idle it asks for no effort: nothing is solved, no worker is
+started, and a visit is as fast as without it (checked in a browser: 0 puzzles, 0 workers).
+
+The browser client solves the puzzles, in Web Workers (see the README, "Onion services that ask for
+proof of work"). arti has the solver but runs it on an operating-system thread, which WASM does not
+have, so this project vendors a small patch of arti's onion service client (`crates/patches/
+tor-hsclient`) that hands the puzzle to JavaScript. What it costs a visitor: the puzzle function
+(Equi-X) runs in WASM only through its interpreter, because WASM cannot run generated machine code.
+Measured: 310 ms per attempt in WASM, 226 ms natively with the interpreter, 10.8 ms natively with the
+compiler that c-tor and arti use. A solution is accepted with probability 1 over the effort and an
+attempt yields about 2.4 candidates, so an effort of E costs about E x 0.13 s of one worker. Measured
+end to end, from a browser with 8 workers: effort 16 took 3 s; effort 100 took between 6 and 55 s in
+seven runs (the first worker to find a solution wins, so times vary widely; a direct test of the
+workers on an idle page took 0.5 to 7 s, and why the live runs were slower on average is not
+understood); from Node with 3 workers, effort 100 took 9 to 12 s. The client pays at most 2000 by
+default (arti's cap is 10000): at these speeds that is minutes, so a visitor facing a very high effort
+waits a long time; `client.pow.maxEffort` lowers it. Compiling each puzzle to WASM instead of
+interpreting it could make a worker several times faster (an estimate; not built).
+
+Checked against the real Tor program (`test/site-live-pow.mjs`, 0.4.9.11): a solution is accepted and
+the page is served; the same solution with one bit of the proof flipped gets no answer within 100 s,
+because the service drops a request whose proof does not verify. What was not checked: behaviour under
+a real flood (none can be produced here), so that a visitor really is served ahead of one who paid
+less, and what effort a real attack makes a service ask for, are by design, not demonstrated.
+
+Visitors whose browser cannot run the workers (the Service Worker host, which cannot start workers)
+connect without offering a solution: fine while the service is idle, and at the back of the queue
+under attack, as if the service had no proof of work. Turn it off in the demo with `--no-pow`, or in
+`torrcLines` with `pow: false`.
 
 ### Keep-alive and the server's connection limit
 
