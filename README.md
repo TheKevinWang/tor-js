@@ -377,8 +377,11 @@ nothing is solved: no worker is started and a normal visit is unchanged.
 The solving runs in Web Workers that load the same WASM (`tor-site-pow.js`, which the usual
 `/tor-site*.js` pattern in `static` already covers), one fewer than the cores, between 1 and 8, and
 only while a puzzle is being solved. Where the Tor client lives in a SharedWorker (the default host,
-and the frame shell), which cannot start workers, an attached page runs them. In the Service Worker host
-nothing can, and the client connects without offering a solution, as before. One unit of effort costs
+and the frame shell) or in the Service Worker (`"host": "service-worker"`), neither of which can start
+workers, a page runs them: a page attached to the host, or a page the Service Worker controls (the one
+last focused is asked first; the page script `tor-site.js` answers). With no such page open the client
+connects without offering a solution, as before. A browser may stop a Service Worker that has been busy
+for minutes, which a very high effort could cause. One unit of effort costs
 about 0.13 s of one worker, so an effort of 100 takes seconds and 1000 minutes; the client pays at most
 2000 (arti's own cap is 10000).
 

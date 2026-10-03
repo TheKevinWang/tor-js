@@ -14,3 +14,5 @@ export * from '../../../src/pow/powPool.js';
 export * from '../../../src/pow/install.js';
 export * from '../../../src/pow/powPage.js';
 export * from '../../../src/pow/powRelay.js';
+export * from '../../../src/pow/clientRelay.js';
+export * from '../../../src/pow/manifestPow.js';

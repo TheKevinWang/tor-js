@@ -30,9 +30,10 @@ export function canSolveProofOfWork(): boolean {
  * Install a solver. Returns a function that removes it again.
  *
  * Where workers can be started (a page, a dedicated worker, Node with `createWorker`), the pool is
- * used directly. Where they cannot (a SharedWorker has no `Worker` in Chromium), `acquirePort` asks a
- * page to run the pool (powRelay.ts, powPage.ts). With neither, nothing is installed and the Tor
- * client connects without offering a solution, as before; so too in a Service Worker.
+ * used directly. Where they cannot (a SharedWorker has no `Worker` in Chromium, nor does a Service
+ * Worker), `acquirePort` asks a page to run the pool (powRelay.ts, powPage.ts; for a Service Worker,
+ * clientRelay.ts). With neither, nothing is installed and the Tor client connects without offering a
+ * solution, as before.
  */
 export function installPowSolver(
   options: PowSolverOptions & PowSettings & { acquirePort?: PowRelayOptions['acquirePort'] },

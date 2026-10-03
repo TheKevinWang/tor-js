@@ -21,7 +21,9 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   patch of `tor-hsclient` (`crates/patches/tor-hsclient`) hands them to JavaScript, which solves them in
   a pool of Web Workers running the same WASM (`tor-site-pow.js`, one fewer than the cores, started only
   while a puzzle is being solved). Where the Tor client is in a SharedWorker, which has no `Worker` in
-  Chromium, an attached page runs the pool. Idle services ask for no effort and cost nothing. Manifest
+  Chromium, an attached page runs the pool; with the Tor client in the Service Worker (`"host":
+  "service-worker"`), which cannot start workers either, a page it controls does. Idle services ask for
+  no effort and cost nothing. Manifest
   setting `client.pow` (`false`, or `workers`, `maxEffort` default 2000, `minEffort`, `workerUrl`).
   Checked against the real Tor program: a solved puzzle is accepted, a corrupted one gets no answer. An
   effort of 100 took 3 to 55 s in a browser with 8 workers. The generated torrc has proof of work on

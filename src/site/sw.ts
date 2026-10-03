@@ -18,6 +18,8 @@ import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { PortBackend } from './rpc.js';
 import { injectIntoHtml, pageScriptTag, shouldInject } from './inject.js';
 import { adaptForFrame } from './frameHeaders.js';
+import { createClientPowAcquirer } from '../pow/clientRelay.js';
+import { installManifestPow } from '../pow/manifestPow.js';
 import { errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
 
 declare const self: ServiceWorkerGlobalScope;
@@ -54,7 +56,11 @@ function load(): Promise<Loaded> {
     const res = await fetch(manifestUrl, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`cannot load ${manifestUrl}: HTTP ${res.status}`);
     const manifest = parseManifest(await res.json());
-    setWasmUrl(new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', manifestUrl).href);
+    const wasmUrl = new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', manifestUrl).href;
+    setWasmUrl(wasmUrl);
+    // Proof-of-work puzzles are solved for this Tor client (when `client.host` is "service-worker", it is
+    // in here) by the pages this Service Worker controls: it cannot start workers, they can.
+    installManifestPow(manifest, manifestUrl, wasmUrl, createClientPowAcquirer(() => self.clients.matchAll({ type: 'window' })));
     const router = new SiteRouter(manifest, visibleOrigin, scopePath);
     const local = new LocalBackend({
       manifest, manifestUrl, visibleOrigin, scopePath,

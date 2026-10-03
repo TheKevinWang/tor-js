@@ -63,8 +63,8 @@ export interface ClientOptions {
   shellPage?: string;
   /**
    * Solve an onion service's proof-of-work puzzles, in a pool of Web Workers started only when a
-   * service asks for effort. On by default where workers exist (the worker host, not the Service
-   * Worker); `false` turns it off. An object sets: `workers` (how many; default one less than the
+   * service asks for effort. On by default; where the Tor client's host cannot start workers (a
+   * SharedWorker, the Service Worker) a page runs them. `false` turns it off. An object sets: `workers` (how many; default one less than the
    * cores, 1 to 8), `maxEffort` (the most effort to pay; default 2000), `minEffort` (the least to pay
    * whenever the service uses proof of work, default 0), `workerUrl` (URL relative to the manifest;
    * default `tor-site-pow.js`). See src/pow/powPool.ts.

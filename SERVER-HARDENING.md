@@ -72,9 +72,10 @@ because the service drops a request whose proof does not verify. What was not ch
 a real flood (none can be produced here), so that a visitor really is served ahead of one who paid
 less, and what effort a real attack makes a service ask for, are by design, not demonstrated.
 
-Visitors whose browser cannot run the workers (the Service Worker host, which cannot start workers)
-connect without offering a solution: fine while the service is idle, and at the back of the queue
-under attack, as if the service had no proof of work. Turn it off in the demo with `--no-pow`, or in
+The workers are run by a page of the site, whichever way the Tor client is hosted (a worker host or the
+Service Worker; checked in a browser for both). A visitor with no page open to do it, which in practice
+means no visitor, would connect without offering a solution: fine while the service is idle, and at the
+back of the queue under attack, as if the service had no proof of work. Turn it off in the demo with `--no-pow`, or in
 `torrcLines` with `pow: false`.
 
 ### Keep-alive and the server's connection limit

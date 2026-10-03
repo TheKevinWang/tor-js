@@ -83,6 +83,13 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
   const debug = opts.debug ?? debugFlag();
   navigator.serviceWorker.addEventListener('message', (event) => {
     const data = event.data as { type?: string; status?: SiteStatus; level?: string; message?: string } | null;
+    // With the Tor client in the Service Worker, which cannot start workers, this page solves a
+    // proof-of-work puzzle for it (src/pow/clientRelay.ts); the same request a host worker makes.
+    const pow = event.data as { t?: string; port?: MessagePort; options?: PowPageOptions } | null;
+    if (pow?.t === 'pow-request' && pow.port && pow.options) {
+      servePow(pow.port, pow.options);
+      return;
+    }
     if (data?.type === 'tor-site-log') {
       note('log', `${data.level} ${data.message}`);
       if (debug) console.log(`[tor-site ${data.level}]`, data.message);
