@@ -1,0 +1,144 @@
+[package]
+name = "tor-hsservice"
+version = "0.45.0"
+authors = ["The Tor Project, Inc.", "Nick Mathewson <nickm@torproject.org>"]
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+homepage = "https://gitlab.torproject.org/tpo/core/arti/-/wikis/home"
+description = "Arti's implementation of an onion service provider (tor-js patch: in-memory state instead of a state directory, see PATCH.md)"
+keywords = ["tor", "arti", "cryptography"]
+categories = ["cryptography"]
+repository = "https://gitlab.torproject.org/tpo/core/arti.git/"
+#
+# We need a PreferredRuntime
+# @@ test-all-crates conditional-option minimal --features=tor-rtcompat/tokio,tor-rtcompat/native-tls
+
+[features]
+default = []
+restricted-discovery = []
+
+metrics = ["dep:metrics", "__is_experimental"]
+
+# Onion service proof of work schemes
+hs-pow-full = [
+    "tor-hscrypto/hs-pow-full",
+    "tor-netdoc/hs-pow-full",
+    "tor-cell/hs-pow-full",
+    "arrayvec",
+    "equix",
+    "num-traits",
+    "tor-checkable",
+    "__is_experimental",
+]
+
+full = [
+    "restricted-discovery",
+    "fs-mistrust/full",
+    "oneshot-fused-workaround/full",
+    "retry-error/full",
+    "safelog/full",
+    "tor-async-utils/full",
+    "tor-basic-utils/full",
+    "tor-bytes/full",
+    "tor-cell/full",
+    "tor-checkable?/full",
+    "tor-circmgr/full",
+    "tor-config-path/full",
+    "tor-config/full",
+    "tor-dirclient/full",
+    "tor-error/full",
+    "tor-hscrypto/full",
+    "tor-keymgr/full",
+    "tor-linkspec/full",
+    "tor-llcrypto/full",
+    "tor-log-ratelim/full",
+    "tor-netdir/full",
+    "tor-netdoc/full",
+    "tor-persist/full",
+    "tor-proto/full",
+    "tor-protover/full",
+    "tor-relay-selection/full",
+    "tor-rtcompat/full",
+    "equix?/full",
+    "web-time-compat/full",
+]
+
+# Enable experimental APIs that are not yet officially supported.
+#
+# These APIs are not covered by semantic versioning.  Using this
+# feature voids your "semver warrantee".
+experimental = [
+    "experimental-api",
+    "hs-pow-full",
+    "metrics",
+    "negotiate-extensions",
+    "onion-service-cli-extra",
+]
+experimental-api = ["__is_experimental"]
+
+onion-service-cli-extra = ["tor-keymgr/onion-service-cli-extra", "__is_experimental"]
+
+negotiate-extensions = ["__is_experimental"]
+
+__is_experimental = []
+
+[dependencies]
+amplify = { version = "4", default-features = false, features = ["derive"] }
+arrayvec = { version = "0.7.4", features = ["serde"], optional = true }
+async-trait = "0.1.54"
+base64ct = "1.5.1"
+cfg-if = "1.0.0"
+derive-deftly = { version = "~1.11.4", features = ["full", "beta"] }
+derive_builder = { version = "0.11.2", package = "derive_builder_fork_arti" }
+derive_more = { version = "2.0.1", features = ["full"] }
+digest = "0.10.0"
+educe = "0.4.22"
+equix = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", optional = true }
+fs-mistrust = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["serde"] }
+futures = "0.3.14"
+growable-bloom-filter = "2.0.1"
+hex = "0.4"
+humantime = "2"
+itertools = "0.15.0"
+k12 = "0.3.0"
+metrics = { version = "0.24.6", optional = true }
+num-traits = { version = "0.2.15", optional = true }
+once_cell = "1"
+oneshot-fused-workaround = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+postage = { version = "0.5.0", default-features = false, features = ["futures-traits"] }
+rand = "0.10.1"
+rand_core = "0.10.1"
+retry-error = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+safelog = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+serde = { version = "1.0.103", features = ["derive"] }
+serde_json = "1.0.104"
+serde_with = "3.0.0"
+strum = { version = "0.28.0", features = ["derive"] }
+thiserror = "2"
+tor-async-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-basic-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-bytes = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-cell = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs"] }
+tor-checkable = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", optional = true }
+tor-circmgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-service", "send-control-msg"] }
+tor-config = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-config-path = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-dirclient = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["hs-service"] }
+tor-error = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-hscrypto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["ope"] }
+tor-keymgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["keymgr"] }
+tor-linkspec = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["verbatim", "decode"] }
+tor-llcrypto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-log-ratelim = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-netdir = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-service"] }
+tor-netdoc = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["hs-service"] }
+tor-persist = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-proto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", features = ["experimental-api", "hs-service", "send-control-msg"] }
+tor-protover = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-relay-selection = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tor-rtcompat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+tracing = "0.1.36"
+void = "1"
+web-time-compat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
+

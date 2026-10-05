@@ -48,3 +48,6 @@ webrtc = { git = "https://github.com/ethereum/kps.git", rev = "4982e1c1cdce3baa3
 # crates/tor-js-wasm/Cargo.toml.
 [patch."https://github.com/voltrevo/arti"]
 tor-hsclient = { path = "crates/patches/tor-hsclient" }
+# tor-js patch of arti's onion service host: its state is kept in memory instead of a state directory,
+# so a service can run in a browser. See crates/patches/tor-hsservice/PATCH.md.
+tor-hsservice = { path = "crates/patches/tor-hsservice" }
