@@ -24,6 +24,8 @@ const stub = (globalThis.__wasmStub = {
   failCreate: false,
   /** Set to make client.ready() reject; cleared by the test between attempts. */
   failReady: false,
+  /** When set to a promise, client.ready() waits for it (readiness still pending). */
+  readyGate: null,
   reset() {
     this.levels = []
     this.fanout = null
@@ -35,6 +37,7 @@ const stub = (globalThis.__wasmStub = {
     this.failInit = false
     this.failCreate = false
     this.failReady = false
+    this.readyGate = null
   },
 })
 
@@ -98,6 +101,7 @@ export class TorClient {
 
   async ready() {
     this.readyCalls++
+    if (stub.readyGate) await stub.readyGate
     if (stub.failReady) throw new Error('bootstrap failed')
   }
 

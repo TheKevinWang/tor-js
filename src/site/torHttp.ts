@@ -13,9 +13,11 @@
  */
 
 import type { FetchInit } from '../types.js';
+import { abortError, isAbortError } from '../abort.js';
 import type { CookieJar } from './cookieJar.js';
 import { isAllowedOnion, visiblePathFor, type Route, type SiteManifest, type TorRule } from './manifest.js';
 import { SiteRouter } from './router.js';
+import { cookieDecision, refusal, type CookieDecision, type Initiator } from './requestPolicy.js';
 
 /** A request in a form that survives postMessage: the Service Worker builds it from a `Request`. */
 export interface SiteRequest {
@@ -25,6 +27,16 @@ export interface SiteRequest {
   body: Uint8Array | null;
   redirect?: 'follow' | 'manual' | 'error';
   signal?: AbortSignal;
+  /** `Request.mode` ("navigate" for a link, form or typed URL). */
+  mode?: string;
+  /** `Request.credentials`; "omit" means no cookies are sent or stored. */
+  credentials?: string;
+  /**
+   * Who started the request (see requestPolicy.ts). The Service Worker decides;
+   * when absent the request counts as `unknown`: no state-changing methods, no
+   * `SameSite=Strict` cookies, and no `Origin`/`Referer` sent on its behalf.
+   */
+  initiator?: Initiator;
 }
 
 export interface SiteResponse {
@@ -100,9 +112,13 @@ export class TorHttp {
     const target = route.onion + route.path + search;
     const rule = this.router.ruleFor(req.url);
     const method = req.method.toUpperCase();
+    // Checked here as well as in the Service Worker, so that no path to the onion skips it.
+    const refused = refusal(req);
+    if (refused) return errorResponse(403, `tor-site: ${refused}`);
+    const cookies = cookieDecision(req);
     const hasBody = req.body !== null && req.body.byteLength > 0 && method !== 'GET' && method !== 'HEAD';
 
-    const headers = this.requestHeaders(req, target, route.onion, method);
+    const headers = this.requestHeaders(req, target, route.onion, method, cookies);
     let response: Response;
     try {
       response = await this.opts.fetch(target, {
@@ -112,14 +128,18 @@ export class TorHttp {
         ...(req.signal ? { signal: req.signal } : {}),
       });
     } catch (e) {
+      // An abort is the caller's decision, not a Tor failure: it stays an abort through the worker message boundary.
+      if (req.signal?.aborted || isAbortError(e)) throw abortError(req.signal);
       return errorResponse(502, `Tor request to ${new URL(target).host} failed: ${describe(e)}`);
     }
 
     const raw = rawHeaders(response);
-    this.opts.jar.setFromResponse(
-      target,
-      raw.filter(([k]) => k === 'set-cookie').map(([, v]) => v),
-    );
+    if (cookies.store) {
+      this.opts.jar.setFromResponse(
+        target,
+        raw.filter(([k]) => k === 'set-cookie').map(([, v]) => v),
+      );
+    }
 
     const encoding = (headerValue(raw, 'content-encoding') ?? '').trim().toLowerCase();
     const decoder = decoderFor(encoding);
@@ -147,7 +167,13 @@ export class TorHttp {
 
   // -------------------------------------------------------------------------
 
-  private requestHeaders(req: SiteRequest, target: string, onion: string, method: string): Record<string, string> {
+  private requestHeaders(
+    req: SiteRequest,
+    target: string,
+    onion: string,
+    method: string,
+    cookies: CookieDecision,
+  ): Record<string, string> {
     const out: Record<string, string> = {};
     let hasRange = false;
     for (const [name, value] of req.headers) {
@@ -156,13 +182,17 @@ export class TorHttp {
       if (k === 'range') hasRange = true;
       out[k] = k in out ? `${out[k]}, ${value}` : value;
     }
-    // Backends check these to defend against cross-site forgery; from the
-    // backend's point of view the request comes from its own origin.
-    if (req.headers.some(([k]) => k.toLowerCase() === 'origin')) out.origin = onion;
-    if (req.headers.some(([k]) => k.toLowerCase() === 'referer')) out.referer = onion + '/';
+    // Backends check these to defend against cross-site forgery. A request one
+    // of the site's own pages made comes, from the backend's point of view, from
+    // its own origin, so it is labelled with the onion. Any other request is
+    // never given that label: its Origin and Referer are not sent at all.
+    if (req.initiator === 'same-origin') {
+      if (req.headers.some(([k]) => k.toLowerCase() === 'origin')) out.origin = onion;
+      if (req.headers.some(([k]) => k.toLowerCase() === 'referer')) out.referer = onion + '/';
+    }
     out['user-agent'] = TOR_USER_AGENT;
     if (!('accept-language' in out)) out['accept-language'] = DEFAULT_ACCEPT_LANGUAGE;
-    const cookie = this.opts.jar.headerFor(target);
+    const cookie = cookies.send ? this.opts.jar.headerFor(target, Date.now(), { includeStrict: cookies.includeStrict }) : '';
     if (cookie) out.cookie = cookie;
     if (!hasRange && method !== 'HEAD') out['accept-encoding'] = 'gzip';
     return out;
@@ -215,12 +245,14 @@ function describe(e: unknown): string {
   return String(e);
 }
 
+const STATUS_TEXT: Record<number, string> = { 403: 'Forbidden', 502: 'Bad Gateway', 503: 'Service Unavailable' };
+
 /** A plain-text error page. Tor failures are reported, never retried over the clear web. */
 export function errorResponse(status: number, message: string): SiteResponse {
   const bytes = new TextEncoder().encode(message + '\n');
   return {
     status,
-    statusText: status === 502 ? 'Bad Gateway' : '',
+    statusText: STATUS_TEXT[status] ?? '',
     headers: [
       ['content-type', 'text/plain; charset=utf-8'],
       ['x-tor-site-error', '1'],

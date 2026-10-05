@@ -9,6 +9,11 @@
  *
  * Failing closed: a request routed to Tor is only ever answered from Tor. If
  * Tor is unavailable the page gets a 502 that says so, never a fallback fetch.
+ * The same holds when routing itself is unknown: the last valid manifest is
+ * kept across restarts (manifestStore.ts), and while none can be had, requests
+ * are answered locally with a 503 instead of being forwarded to the static host.
+ * A state-changing request that another site starts (a form posted into a Tor
+ * route) is refused before it is sent (requestPolicy.ts).
  */
 
 import { setWasmUrl } from '../wasm.js';
@@ -21,6 +26,9 @@ import { adaptForFrame } from './frameHeaders.js';
 import { createClientPowAcquirer } from '../pow/clientRelay.js';
 import { installManifestPow } from '../pow/manifestPow.js';
 import { errorResponse, type SiteRequest, type SiteResponse } from './torHttp.js';
+import { cacheManifestStore, loadRoutingManifest } from './manifestStore.js';
+import { classifyInitiator, refusal } from './requestPolicy.js';
+import { abortError } from '../abort.js';
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -28,6 +36,8 @@ const params = new URL(self.location.href).searchParams;
 const manifestUrl = new URL(params.get('manifest') || 'tor-site.json', self.location.href).href;
 const scopePath = new URL(self.registration.scope).pathname;
 const visibleOrigin = self.location.origin;
+/** How long a worker start waits for a fresh manifest before using the saved one. */
+const MANIFEST_TIMEOUT_MS = 15_000;
 
 interface Loaded {
   manifest: SiteManifest;
@@ -53,9 +63,17 @@ let lastStatus: SiteStatus = { state: 'idle' };
 function load(): Promise<Loaded> {
   if (loading) return loading;
   const attempt = (async (): Promise<Loaded> => {
-    const res = await fetch(manifestUrl, { cache: 'no-cache' });
-    if (!res.ok) throw new Error(`cannot load ${manifestUrl}: HTTP ${res.status}`);
-    const manifest = parseManifest(await res.json());
+    const { manifest, source, freshError, saveError } = await loadRoutingManifest({
+      fetchFresh: async () => {
+        const res = await fetch(manifestUrl, { cache: 'no-cache', signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`cannot load ${manifestUrl}: HTTP ${res.status}`);
+        return res.json();
+      },
+      store: cacheManifestStore(manifestUrl),
+      parse: (raw) => parseManifest(raw),
+    });
+    if (source === 'saved') publishLog('warn', `[sw] ${freshError}; routing with the last valid manifest instead`);
+    if (saveError) publishLog('warn', `[sw] the manifest could not be saved for the next restart: ${saveError}`);
     const wasmUrl = new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', manifestUrl).href;
     setWasmUrl(wasmUrl);
     // Proof-of-work puzzles are solved for this Tor client (when `client.host` is "service-worker", it is
@@ -110,9 +128,35 @@ function publishStatus(status: SiteStatus): void {
 
 // --- lifecycle -------------------------------------------------------------
 
+// A worker never activates without a valid manifest (fresh, or saved by an
+// earlier version): installing fails instead, and registerTorSite() rejects.
 self.addEventListener('install', (event) => {
-  event.waitUntil(self.skipWaiting());
+  void self.skipWaiting();
+  event.waitUntil(Promise.all([load(), routeScopeToFetchHandler(event)]));
 });
+
+/**
+ * Chromium can send a navigation to the network while it starts a stopped
+ * Service Worker, in parallel with the worker answering it. Checked in Chromium
+ * 152: after the worker had gone idle, a navigation to a Tor route reached the
+ * static host, query string included, although the page was then served over
+ * Tor. A Static Routing API rule that sends the whole scope to this worker's
+ * fetch handler stops that parallel request (same check: nothing reached the
+ * static host). The rule changes nothing else, since every in-scope request
+ * goes to the fetch handler anyway; it covers the whole scope rather than the
+ * manifest's Tor routes so that a later manifest update is covered too.
+ * Browsers without the API (Firefox, Safari) skip this.
+ */
+async function routeScopeToFetchHandler(event: ExtendableEvent): Promise<void> {
+  const install = event as ExtendableEvent & { addRoutes?: (rules: unknown) => Promise<void> };
+  if (typeof install.addRoutes !== 'function') return;
+  const pathname = scopePath.replace(/[:*(){}+?\\]/g, '\\$&') + '*';
+  try {
+    await install.addRoutes([{ condition: { urlPattern: { pathname } }, source: 'fetch-event' }]);
+  } catch (e) {
+    console.warn('[tor-site] could not register the routing rule that keeps navigations off the network during worker start-up:', e);
+  }
+}
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
@@ -176,9 +220,10 @@ let warnedAboutNavigation = false;
 const needsHost = (l: Loaded): boolean => l.manifest.client.snowflake === 'webrtc';
 
 /** A live host, asking open pages to attach one and waiting for it, for up to `timeoutMs`; the local client only after that. */
-async function waitForHost(l: Loaded, timeoutMs = 30_000): Promise<SiteBackend> {
+async function waitForHost(l: Loaded, signal?: AbortSignal, timeoutMs = 30_000): Promise<SiteBackend> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    if (signal?.aborted) throw abortError(signal);
     const host = await liveHost();
     if (host) return host;
     const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -207,7 +252,7 @@ async function waitForHost(l: Loaded, timeoutMs = 30_000): Promise<SiteBackend> 
  */
 async function pickBackend(l: Loaded, request: Request): Promise<SiteBackend> {
   if (l.manifest.client.host === 'service-worker') return l.local;
-  if (needsHost(l)) return waitForHost(l);
+  if (needsHost(l)) return waitForHost(l, request.signal);
   if (request.destination === 'document') {
     if (!warnedAboutNavigation) {
       warnedAboutNavigation = true;
@@ -263,13 +308,38 @@ self.addEventListener('fetch', (event) => {
       },
       (e) => {
         reportLoadError(e);
-        // Without a manifest nothing is known to be private, so behave as a
-        // plain static site rather than break every page.
-        return fetch(request);
+        return routingUnavailable(request, e);
       },
     ),
   );
 });
+
+/**
+ * The answer to a request while no manifest can be had, fresh or saved. Then
+ * nothing is known to be public, and forwarding would hand whatever the request
+ * carries (a private path, query or form body) to the static host. So nothing
+ * is forwarded except the manifest itself, which holds nothing private and which
+ * the page script reads when it starts.
+ */
+function routingUnavailable(request: Request, e: unknown): Promise<Response> | Response {
+  const u = new URL(request.url);
+  const m = new URL(manifestUrl);
+  if (request.method === 'GET' && u.origin === m.origin && u.pathname === m.pathname) return fetch(request);
+  const why = e instanceof Error ? e.message : String(e);
+  const r = errorResponse(503, `tor-site: this request was not sent anywhere, because the site's routing manifest could not be loaded (${why})`);
+  return new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers });
+}
+
+/** Origin of the page that started a request, when it is one of this site's; `clients.get` does not see other sites' pages. */
+async function clientOrigin(clientId: string): Promise<string | null> {
+  if (!clientId) return null;
+  try {
+    const client = await self.clients.get(clientId);
+    return client ? new URL(client.url).origin : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * With the frame shell, a top-level navigation to a Tor route is answered with
@@ -297,6 +367,20 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
   const request = event.request;
   if (l.shell && request.mode === 'navigate' && request.destination === 'document') return shellResponse(l.shell);
   try {
+    const path = new URL(request.url).pathname;
+    const initiator = classifyInitiator({
+      mode: request.mode,
+      clientOrigin: request.mode === 'navigate' ? await clientOrigin(event.clientId) : null,
+      originHeader: request.headers.get('origin'),
+      referrer: request.referrer,
+      visibleOrigin,
+    });
+    // Refused here, before a backend is picked or Tor waited for; TorHttp checks again.
+    const refused = refusal({ method: request.method, initiator });
+    if (refused) {
+      publishLog('warn', `[sw] ${request.method} ${path}: ${refused}`);
+      return toResponse(errorResponse(403, `tor-site: ${refused}`), event);
+    }
     const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
     const siteRequest: SiteRequest = {
       url: request.url,
@@ -305,10 +389,13 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
       body: hasBody ? new Uint8Array(await request.arrayBuffer()) : null,
       redirect: request.redirect,
       signal: request.signal,
+      mode: request.mode,
+      credentials: request.credentials,
+      initiator,
     };
-    const path = new URL(request.url).pathname;
     request.signal.addEventListener('abort', () => publishLog('warn', `[sw] the browser aborted ${request.method} ${path}`), { once: true });
     const backend = await pickBackend(l, request);
+    if (request.signal.aborted) throw abortError(request.signal);
     let response: SiteResponse;
     try {
       response = await backend.handle(siteRequest);
@@ -321,7 +408,7 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
       if (needsHost(l)) {
         // The failed host has been dropped; ask for another live one rather than the local client.
         publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with another host`);
-        response = await (await waitForHost(l)).handle(siteRequest);
+        response = await (await waitForHost(l, request.signal)).handle(siteRequest);
       } else {
         publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with Tor in the Service Worker`);
         response = await l.local.handle(siteRequest);

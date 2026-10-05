@@ -202,6 +202,7 @@ describe('TorClient', () => {
   beforeEach(() => {
     stub.failCreate = false
     stub.failReady = false
+    stub.readyGate = null
   })
 
   test('ready() resolves once the WASM client reports ready', async () => {
@@ -275,6 +276,54 @@ describe('TorClient', () => {
     assert.ok(wasmClient.readyCalls >= 1, 'fetch awaited readiness')
     assert.deepEqual(wasmClient.fetches, [['https://example.com/x', { method: 'POST' }]])
     client.close()
+  })
+
+  describe('abort', () => {
+    test('an already-aborted signal rejects at once, before waiting for readiness', async () => {
+      let open
+      stub.readyGate = new Promise((r) => (open = r))
+      const client = makeClient()
+      const ac = new AbortController()
+      ac.abort()
+      const err = await client.fetch('https://example.com/', { signal: ac.signal }).then(() => null, (e) => e)
+      assert.equal(err?.name, 'AbortError')
+      assert.equal(err.code, 'ABORT')
+      open()
+      client.close()
+    })
+
+    test('aborting while readiness is pending rejects promptly; the WASM fetch never runs', async () => {
+      let open
+      stub.readyGate = new Promise((r) => (open = r))
+      const client = makeClient()
+      const ac = new AbortController()
+      const p = client.fetch('https://example.com/', { signal: ac.signal })
+      await tick(5)
+      ac.abort(new Error('caller gave up'))
+      const err = await Promise.race([p.then(() => null, (e) => e), tick(200).then(() => 'still pending')])
+      assert.equal(err?.name, 'AbortError', 'rejected, not left pending')
+      assert.equal(err.cause?.message, 'caller gave up', 'the signal reason is kept as the cause')
+      open()
+      await tick(5)
+      assert.deepEqual(stub.clients.at(-1).fetches, [], 'nothing was sent')
+      client.close()
+    })
+
+    test('cancelling one caller does not cancel another caller sharing the client', async () => {
+      let open
+      stub.readyGate = new Promise((r) => (open = r))
+      const client = makeClient()
+      const ac = new AbortController()
+      const cancelled = client.fetch('https://example.com/a', { signal: ac.signal })
+      const kept = client.fetch('https://example.com/b')
+      await tick(5)
+      ac.abort()
+      await assert.rejects(cancelled, { name: 'AbortError' })
+      open()
+      assert.equal((await kept).status, 200)
+      assert.deepEqual(stub.clients.at(-1).fetches.map(([u]) => u), ['https://example.com/b'])
+      client.close()
+    })
   })
 
   test('fetch() surfaces a bootstrap failure', async () => {

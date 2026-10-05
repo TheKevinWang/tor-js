@@ -5,6 +5,42 @@
 No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB,
 `tor-js/wasm-file` 1.9 → 2.0 MB) for bridge support and the Snowflake transport.
 
+### Fixed (code review of 2026-10-04, `CODE_REVIEW.md`)
+
+- **The site adapter no longer forwards private requests to the static host when its manifest cannot be
+  loaded (R1).** A Service Worker that restarted while `tor-site.json` was unreachable or invalid used to
+  treat every path as static, handing a Tor route's path, query and form body to the static host. It now keeps
+  the last valid manifest in Cache Storage and routes by it, answers locally with `503` when it has none,
+  refuses to install without a valid manifest (`registerTorSite()` rejects instead of hanging), and registers a
+  Static Routing API rule so Chromium does not send a navigation to the network in parallel while it starts a
+  stopped worker (seen in Chromium 152: a cold-start navigation's URL reached the static host even though the
+  worker then answered it).
+- **Cross-site request forgery through the adapter (R2).** A form another site posted into a Tor route reached
+  the onion service with the site's cookies and an `Origin` rewritten to the onion's own. The worker now works
+  out who started each request (`src/site/requestPolicy.ts`): state-changing requests that the site's own pages
+  did not make are refused with `403` before anything is sent; foreign `Origin`/`Referer` values are dropped
+  instead of relabelled; `credentials: "omit"` is honoured; `SameSite=Strict` cookies go only with the site's
+  own requests.
+- **`fetch` no longer throws for 204, 205 and 304 responses, and returns a null body for HEAD (R3).** The WASM
+  client gave the `Response` constructor a stream for every response, which the constructor rejects for those
+  statuses. A keep-alive connection is still returned to the pool.
+- **Aborting a request stops it while it waits (R5).** `TorClient.fetch` now rejects at once when its signal
+  aborts while Tor is still starting (without cancelling other callers), and the WASM client races connecting,
+  the TLS handshake, the upload, the response head and each body read against the signal, closing the Tor
+  stream. Abort errors from either layer have `name` `"AbortError"` and `code` `"ABORT"`, and the site adapter
+  passes them through instead of turning them into `502`s. The site adapter stops waiting for Tor or a host
+  worker when the browser aborts.
+- **The web proxy states its real trust model (R4).** Its README and page no longer imply that every request
+  stays inside Tor: proxied pages share the shell's origin and are not sandboxed, and a page that defeats the
+  rewriter can send the whole tab or a new window to a site directly. The shell now has `frame-src 'self'`, so
+  the browser refuses to load another site into the proxy's frame (checked in Chromium).
+- **Node 24 lost the cross-process storage lock.** Node 24 has `navigator.locks`, so `addLocking` took the
+  browser path, whose locks only cover one process; Node now always uses the lock file. Found while making the
+  unit tests pass on Windows (`os.homedir()` reads `USERPROFILE` there, and an ESM import needs a file URL).
+- **Node's filesystem storage could not start with a full directory cache on Windows.** `getAll` opened every
+  file at once (one per microdescriptor, about 9,000 after one run) and failed with `EMFILE`; it now reads them
+  64 at a time.
+
 ### Added
 
 - **Static-site adapter (`tor-js/site`).** A Service Worker plus a

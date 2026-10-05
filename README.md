@@ -265,15 +265,35 @@ What the adapter does for you:
 - **Routing fails closed.** A request the manifest sends to Tor is only ever
   answered from Tor; if Tor is down the page gets a `502` saying so, never a
   fetch over the clear web. Only the hosts named in the manifest are ever
-  contacted, and only `.onion` names are accepted.
+  contacted, and only `.onion` names are accepted. Browsers restart Service
+  Workers all the time, so the worker keeps the last manifest it validated
+  (Cache Storage) and routes by it whenever a fresh `tor-site.json` cannot be
+  fetched or does not parse; with no valid copy at all it answers every request
+  locally with a `503` rather than guess, and a worker that cannot get a valid
+  manifest when it installs does not install (`registerTorSite()` rejects). It
+  also tells Chromium, through the Static Routing API, to send its whole scope
+  to the worker, which stops Chromium from sending a navigation to the static
+  host in parallel while it starts a stopped worker. To retire the adapter,
+  deploy a `tor-site-sw.js` that unregisters itself: browsers fetch Service
+  Worker updates straight from the network.
+- **Forms from other sites are refused.** A state-changing request (anything
+  but GET, HEAD and OPTIONS) is sent to the onion service only when one of the
+  site's own pages made it; a form another site submits into a Tor route gets a
+  `403` from the worker and never leaves the browser. (Cross-site form posts into
+  Tor routes, such as OAuth `form_post` callbacks, are therefore not supported.)
 - **Cookies.** `Set-Cookie` is a forbidden response header for page scripts, and
   a browser would file it under the wrong site, so the adapter keeps its own jar
-  (`Path`, `Domain`, `Expires`/`Max-Age`, `Secure`, `HttpOnly`), persisted in
-  IndexedDB, and never sends the site's own cookies to the backend. The jar
-  cannot be read through `document.cookie`.
+  (`Path`, `Domain`, `Expires`/`Max-Age`, `Secure`, `HttpOnly`, `SameSite`),
+  persisted in IndexedDB, and never sends the site's own cookies to the backend.
+  The jar cannot be read through `document.cookie`. `credentials: "omit"` sends
+  and keeps no cookies, and `SameSite=Strict` cookies go only with requests the
+  site's own pages made (not with a link from another site, a bookmark or a typed
+  URL, which the worker cannot tell apart).
 - **Redirects** are handed back to the browser with `Location` rewritten to the
   site's own URL, so the address bar and every hop go through the same routing.
-- **Headers.** `Origin`/`Referer` name the onion (so CSRF checks pass), `Accept-
+- **Headers.** On requests the site's own pages make, `Origin`/`Referer` name
+  the onion (so CSRF checks pass); on any other request they are not sent at
+  all, so a foreign origin is never relabelled as the onion's. `Accept-
   Encoding: gzip` is decoded, and headers that would act on the *static* site
   (`Strict-Transport-Security`, `Clear-Site-Data`, `Alt-Svc`) are dropped. Every
   visitor sends the same Tor Browser-style `User-Agent` rather than the real

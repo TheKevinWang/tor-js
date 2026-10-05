@@ -78,6 +78,11 @@ impl JsTorError {
     /// properties, so `instanceof Error` works and `.stack` is available.
     pub fn into_js_value(self) -> JsValue {
         let err = js_sys::Error::new(&self.message);
+        // Lets callers recognise an abort the usual way (`e.name === 'AbortError'`),
+        // as with the abort errors the TypeScript layer raises (src/abort.ts).
+        if self.kind == "abort" {
+            err.set_name("AbortError");
+        }
         js_sys::Reflect::set(&err, &"code".into(), &self.code.into()).ok();
         js_sys::Reflect::set(&err, &"kind".into(), &self.kind.into()).ok();
         js_sys::Reflect::set(&err, &"retryable".into(), &self.retryable.into()).ok();

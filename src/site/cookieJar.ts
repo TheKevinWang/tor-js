@@ -7,10 +7,11 @@
  * service get their `Cookie` header from this jar, and responses feed it.
  *
  * Deliberate simplifications: no public-suffix list (the only hosts are onion
- * services and whatever the manifest names), `SameSite` is stored but not
- * enforced (every request comes from the one site that owns the jar), and
- * `Secure` cookies are sent over plain `http://` to `.onion` hosts, which are
- * end-to-end encrypted by Tor already.
+ * services and whatever the manifest names), and `Secure` cookies are sent over
+ * plain `http://` to `.onion` hosts, which are end-to-end encrypted by Tor
+ * already. `SameSite` is enforced by the caller, which knows who started the
+ * request (src/site/requestPolicy.ts): it asks for `Strict` cookies only for
+ * requests the site's own pages made.
  */
 
 export interface StoredCookie {
@@ -84,8 +85,12 @@ export class CookieJar {
     }
   }
 
-  /** The value of the `Cookie` request header for `url`, or "" when none apply. */
-  headerFor(url: string, now = Date.now()): string {
+  /**
+   * The value of the `Cookie` request header for `url`, or "" when none apply.
+   * `includeStrict: false` leaves out `SameSite=Strict` cookies, for a request
+   * the site's own pages did not provably make.
+   */
+  headerFor(url: string, now = Date.now(), { includeStrict = true }: { includeStrict?: boolean } = {}): string {
     const u = new URL(url);
     const secure = isSecureUrl(u);
     const before = this.cookies.length;
@@ -97,6 +102,7 @@ export class CookieJar {
       .filter((c) => (c.hostOnly ? host === c.domain : domainMatches(host, c.domain)))
       .filter((c) => pathMatches(path, c.path))
       .filter((c) => !c.secure || secure)
+      .filter((c) => includeStrict || c.sameSite !== 'strict')
       .sort((a, b) => b.path.length - a.path.length || a.created - b.created)
       .map((c) => `${c.name}=${c.value}`)
       .join('; ');

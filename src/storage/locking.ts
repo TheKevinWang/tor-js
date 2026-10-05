@@ -35,8 +35,12 @@ export function addLocking(inner: TorStorageSimple, name: string): TorStorage {
   const HEARTBEAT_MS = 10_000;
 
   async function tryAcquireReal(): Promise<boolean> {
+    // Node.js 24+ also has navigator.locks, but those locks are per process, and
+    // the files they would guard are shared by every process: Node always uses the lock file.
+    const isNode = typeof process !== 'undefined' && !!process.versions?.node;
+
     // Browser
-    if (typeof navigator !== 'undefined' && navigator.locks) {
+    if (!isNode && typeof navigator !== 'undefined' && navigator.locks) {
       let resolveAcquired!: (v: boolean) => void;
       const acquired = new Promise<boolean>(r => { resolveAcquired = r; });
 
@@ -56,7 +60,7 @@ export function addLocking(inner: TorStorageSimple, name: string): TorStorage {
     }
 
     // Node.js
-    if (typeof process !== 'undefined' && process.versions?.node) {
+    if (isNode) {
       try {
         const { fs, fsSync, path, os } = await getNodeDeps();
         const dir = path.join(os.homedir(), '.local', 'share', name);

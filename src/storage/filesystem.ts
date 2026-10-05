@@ -1,6 +1,9 @@
 import type { TorStorageSimple } from './locking.js';
 import { getNodeDeps } from './node-deps.js';
 
+/** How many files `getAll` reads at once. */
+const GET_ALL_BATCH = 64;
+
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return err instanceof Error && 'code' in err;
 }
@@ -161,13 +164,20 @@ export class FilesystemStorage implements TorStorageSimple {
     try {
       const files = await fs.readdir(await this.resolvedDir());
       const keys = files.map(unmangleKey).filter(k => k.startsWith(prefix));
-      const entries = await Promise.all(
-        keys.map(async (key): Promise<[string, string] | null> => {
-          const value = await this.get(key);
-          return value !== null ? [key, value] : null;
-        })
-      );
-      return entries.filter((e): e is [string, string] => e !== null);
+      // In batches: the directory holds one file per microdescriptor, thousands
+      // of them, and opening them all at once runs out of file handles (EMFILE,
+      // seen on Windows with about 9,000 files).
+      const entries: [string, string][] = [];
+      for (let i = 0; i < keys.length; i += GET_ALL_BATCH) {
+        const batch = await Promise.all(
+          keys.slice(i, i + GET_ALL_BATCH).map(async (key): Promise<[string, string] | null> => {
+            const value = await this.get(key);
+            return value !== null ? [key, value] : null;
+          })
+        );
+        for (const e of batch) if (e) entries.push(e);
+      }
+      return entries;
     } catch (err) {
       if (isNodeError(err) && err.code === 'ENOENT') return [];
       throw err;

@@ -16,6 +16,7 @@
 
 import { setWasmUrl } from '../wasm.js';
 import { parseManifest } from './manifest.js';
+import { cacheManifestStore, loadRoutingManifest } from './manifestStore.js';
 import { installManifestPow } from '../pow/manifestPow.js';
 import { LocalBackend, type SiteBackend, type SiteStatus } from './backend.js';
 import { serveBackend } from './rpc.js';
@@ -59,9 +60,16 @@ function getBackend(config: HostConfig): Promise<LocalBackend> {
   backend?.then((old) => old.close(), () => {});
   backendKey = key;
   const attempt = (async () => {
-    const res = await fetch(config.manifestUrl, { cache: 'no-cache' });
-    if (!res.ok) throw new Error(`cannot load ${config.manifestUrl}: HTTP ${res.status}`);
-    const manifest = parseManifest(await res.json());
+    // The same manifest the Service Worker routes by: fresh if possible, else the last valid one it saved.
+    const { manifest } = await loadRoutingManifest({
+      fetchFresh: async () => {
+        const res = await fetch(config.manifestUrl, { cache: 'no-cache' });
+        if (!res.ok) throw new Error(`cannot load ${config.manifestUrl}: HTTP ${res.status}`);
+        return res.json();
+      },
+      store: cacheManifestStore(config.manifestUrl),
+      parse: (raw) => parseManifest(raw),
+    });
     const wasmUrl = new URL(manifest.client.wasmUrl ?? 'tor_js_bg.wasm', config.manifestUrl).href;
     setWasmUrl(wasmUrl);
     // Solve proof-of-work puzzles when a service asks for effort (workers start only then). A

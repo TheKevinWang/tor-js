@@ -11,7 +11,7 @@
 import { test, before, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -30,7 +30,8 @@ before(async () => {
     external: ['@kpstreams/*', 'node:*'],
     logLevel: 'silent',
   })
-  ;({ ArtiSocketProvider } = await import(bundle))
+  // A file URL, not a path: Node rejects `C:\...` as an ESM specifier.
+  ;({ ArtiSocketProvider } = await import(pathToFileURL(bundle).href))
 })
 
 // --- fakes -----------------------------------------------------------------

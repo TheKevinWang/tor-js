@@ -8,6 +8,7 @@ import {
 import type { TorClientOptions, FetchInit, LogLevel, TorResponse } from './types.js';
 import { Log, levelEnabled } from './Log.js';
 import { createAutoStorage } from './storage/index.js';
+import { abortable } from './abort.js';
 import { ArtiSocketProvider } from './socketProvider.js';
 import { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from './snowflake.js';
 
@@ -148,8 +149,11 @@ export class TorClient {
    */
   async fetch(url: string, init?: FetchInit): Promise<TorResponse> {
     if (this.closed) throw new Error('TorClient is closed');
-    const client = await this.clientPromise;
-    await this.ready();
+    // Bootstrap and readiness are shared by every caller, so an abort ends only
+    // this caller's wait for them; the WASM fetch then honours the signal itself.
+    const signal = init?.signal;
+    const client = await abortable(this.clientPromise, signal);
+    await abortable(this.ready(), signal);
     this.log.info(`Fetching ${url}`);
     return client.fetch(url, init) as Promise<TorResponse>;
   }

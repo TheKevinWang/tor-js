@@ -9,6 +9,7 @@
  */
 
 import { TorClient } from '../TorClient.js';
+import { abortable, isAbortError } from '../abort.js';
 import type { RtcPeerFactory } from '../types.js';
 import { Log, type LogLevel } from '../Log.js';
 import { createAutoStorage } from '../storage/index.js';
@@ -69,8 +70,10 @@ export class LocalBackend implements SiteBackend {
   async handle(req: SiteRequest): Promise<SiteResponse> {
     let http: TorHttp;
     try {
-      http = await this.ensure();
+      // Tor starting up is shared by every request; an abort ends only this one's wait.
+      http = await abortable(this.ensure(), req.signal);
     } catch (e) {
+      if (isAbortError(e)) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       return errorResponse(502, `Could not connect to Tor: ${msg}`);
     }

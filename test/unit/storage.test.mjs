@@ -217,22 +217,26 @@ describe('FilesystemStorage', () => {
 // ---------------------------------------------------------------------------
 
 describe('addLocking', () => {
+  // os.homedir() reads HOME on POSIX and USERPROFILE on Windows; point both at the test directory.
+  const HOME_VARS = ['HOME', 'USERPROFILE']
   let realHome
   let homeDir
 
   before(async () => {
-    realHome = process.env.HOME
+    realHome = Object.fromEntries(HOME_VARS.map((k) => [k, process.env[k]]))
   })
 
   after(() => {
-    if (realHome === undefined) delete process.env.HOME
-    else process.env.HOME = realHome
+    for (const k of HOME_VARS) {
+      if (realHome[k] === undefined) delete process.env[k]
+      else process.env[k] = realHome[k]
+    }
   })
 
-  // Each test gets its own HOME so the lock path is isolated.
+  // Each test gets its own home directory so the lock path is isolated.
   const withHome = async () => {
     homeDir = await freshDir()
-    process.env.HOME = homeDir
+    for (const k of HOME_VARS) process.env[k] = homeDir
     return homeDir
   }
 

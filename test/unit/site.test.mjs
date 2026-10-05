@@ -277,6 +277,10 @@ describe('TorHttp', () => {
           res.writeHead(200, { 'strict-transport-security': 'max-age=1', 'clear-site-data': '"storage"', 'x-keep': 'yes' })
           return res.end('ok')
         }
+        if (path === '/samesite') {
+          res.writeHead(200, { 'set-cookie': ['strict=1; Path=/; SameSite=Strict', 'lax=1; Path=/; SameSite=Lax', 'plain=1; Path=/'] })
+          return res.end('ok')
+        }
         if (path === '/nobody') {
           res.writeHead(204)
           return res.end()
@@ -323,7 +327,8 @@ describe('TorHttp', () => {
     const torHttp = new m.TorHttp({ manifest, visibleOrigin: VISIBLE, scopePath, fetch, jar })
     return { torHttp, jar }
   }
-  const req = (url, extra = {}) => ({ url, method: 'GET', headers: [], body: null, ...extra })
+  // What the Service Worker attaches to a request one of the site's own pages made (fetch() from a page).
+  const req = (url, extra = {}) => ({ url, method: 'GET', headers: [], body: null, mode: 'cors', credentials: 'same-origin', initiator: 'same-origin', ...extra })
   const text = async (r) => (r.body ? await new Response(r.body).text() : '')
   const header = (r, k) => r.headers.find(([n]) => n === k)?.[1]
 
@@ -453,6 +458,78 @@ describe('TorHttp', () => {
     assert.equal(h.referer, origin + '/')
     assert.equal(h['sec-fetch-site'], undefined)
     assert.equal(h['x-custom'], 'kept')
+  })
+
+  describe('requests the site did not start (cross-site request forgery)', () => {
+    const post = (initiator, extra = {}) => req(`${VISIBLE}/api/echo`, {
+      method: 'POST', mode: 'navigate', credentials: 'include', body: new TextEncoder().encode('transfer=all'),
+      headers: [['Origin', 'https://evil.example'], ['Content-Type', 'application/x-www-form-urlencoded']],
+      initiator, ...extra,
+    })
+
+    test('a form another site posts into a Tor route is refused with 403 and never reaches the onion', async () => {
+      const { torHttp } = make()
+      seen = []
+      const r = await torHttp.handle(post('cross-site'))
+      assert.equal(r.status, 403)
+      assert.equal(header(r, 'x-tor-site-error'), '1')
+      assert.match(await text(r), /another site/)
+      assert.equal(seen.length, 0, 'nothing was sent to the backend')
+    })
+
+    test('so is one from a page that cannot be identified, and one whose caller gave no initiator at all', async () => {
+      const { torHttp } = make()
+      seen = []
+      assert.equal((await torHttp.handle(post('unknown'))).status, 403)
+      const { initiator, ...noInitiator } = post('unknown')
+      assert.equal((await torHttp.handle(noInitiator)).status, 403)
+      for (const method of ['PUT', 'DELETE', 'PATCH']) {
+        assert.equal((await torHttp.handle(post('cross-site', { method }))).status, 403, method)
+      }
+      assert.equal(seen.length, 0)
+    })
+
+    test("the site's own form post still goes through, with Origin naming the onion", async () => {
+      const { torHttp } = make()
+      seen = []
+      const r = await torHttp.handle(post('same-origin', { headers: [['Origin', VISIBLE]] }))
+      assert.equal(r.status, 200)
+      assert.equal(seen[0].headers.origin, origin)
+    })
+
+    test('a foreign Origin or Referer is never relabelled as the onion: a cross-site link arrives without them', async () => {
+      const { torHttp } = make()
+      seen = []
+      const r = await torHttp.handle(req(`${VISIBLE}/api/echo`, {
+        mode: 'navigate', credentials: 'include', initiator: 'cross-site',
+        headers: [['Origin', 'https://evil.example'], ['Referer', 'https://evil.example/page']],
+      }))
+      assert.equal(r.status, 200, 'a safe navigation is allowed')
+      assert.equal(seen[0].headers.origin, undefined)
+      assert.equal(seen[0].headers.referer, undefined)
+    })
+
+    test('SameSite=Strict cookies go only with requests the site made; Lax and unmarked ones also go with a cross-site link', async () => {
+      const { torHttp, jar } = make()
+      await torHttp.handle(req(`${VISIBLE}/api/samesite`))
+      assert.equal(jar.all().length, 3)
+      const own = await torHttp.handle(req(`${VISIBLE}/api/whoami`))
+      assert.equal(await text(own), 'cookie=strict=1; lax=1; plain=1')
+      for (const initiator of ['cross-site', 'unknown']) {
+        const link = await torHttp.handle(req(`${VISIBLE}/api/whoami`, { mode: 'navigate', credentials: 'include', initiator }))
+        assert.equal(await text(link), 'cookie=lax=1; plain=1', initiator)
+      }
+    })
+
+    test('credentials: "omit" sends no cookies and keeps none the response sets', async () => {
+      const { torHttp, jar } = make()
+      await torHttp.handle(req(`${VISIBLE}/api/samesite`))
+      const r = await torHttp.handle(req(`${VISIBLE}/api/whoami`, { credentials: 'omit' }))
+      assert.equal(await text(r), 'cookie=')
+      jar.clear()
+      await torHttp.handle(req(`${VISIBLE}/api/login`, { method: 'POST', credentials: 'omit' }))
+      assert.equal(jar.all().length, 0, 'Set-Cookie ignored')
+    })
   })
 
   test("every visitor sends the same User-Agent, never the browser's own", async () => {

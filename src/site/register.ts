@@ -127,7 +127,7 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
     : null;
   if (opts.prewarm !== false && host) host.warm();
 
-  await navigator.serviceWorker.ready;
+  await Promise.race([navigator.serviceWorker.ready, installFailure(registration)]);
   await controlled();
   const active = navigator.serviceWorker.controller ?? registration.active;
   active?.postMessage({ type: 'tor-site-hello' });
@@ -253,6 +253,23 @@ function startHost(opts: { script: string; name: string; config: HostConfig }): 
     if ((event.data as { type?: string } | null)?.type === 'tor-site-need-host') attach();
   });
   return { warm: () => control.postMessage({ t: 'warm', config: opts.config }), attached };
+}
+
+/**
+ * Rejects if the worker being installed is discarded with no other worker to
+ * take over. The worker refuses to install without a valid manifest (see
+ * sw.ts), and `navigator.serviceWorker.ready` would then never settle.
+ */
+function installFailure(registration: ServiceWorkerRegistration): Promise<never> {
+  return new Promise<never>((_, reject) => {
+    const worker = registration.installing ?? registration.waiting;
+    if (!worker) return;
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'redundant' && !registration.active && !registration.installing && !registration.waiting) {
+        reject(new Error('tor-site: the Service Worker failed to install because it could not load a valid tor-site.json; nothing is routed to Tor'));
+      }
+    });
+  });
 }
 
 /** Resolves once a Service Worker controls this page (immediately when one already does). */

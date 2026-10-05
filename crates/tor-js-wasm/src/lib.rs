@@ -32,6 +32,7 @@
 // is covered by a plain `cargo test` instead of needing a browser/Node harness.
 #![cfg(any(target_arch = "wasm32", test))]
 
+mod abort;
 mod error;
 mod fast_bootstrap;
 mod fetch;
@@ -796,11 +797,13 @@ async fn fetch_impl(
 
     // Check abort before connecting (circuit building can take several seconds)
     check_aborted(signal.as_ref())?;
+    // From here on an abort is noticed while a step is waiting, not only between steps.
+    let mut abort = signal.map(abort::AbortWatch::new);
+    let head_request = method == http::Method::HEAD;
 
     // A request that may keep its connection first looks for one already open.
     // Reusing skips the round trip to the far end that opening a stream costs.
     let keep_alive = fetch::wants_keep_alive(&url, &method, &headers, &request_body);
-    let pooled = if keep_alive { take_idle_connection(&idle, host, port).await } else { None };
 
     let connect = || async {
         debug!("Connecting to {}:{}...", host, port);
@@ -812,35 +815,41 @@ async fn fetch_impl(
     };
     let release = || keep_alive.then(|| release_to_pool(Rc::clone(&idle), host.to_owned(), port));
 
-    // Perform the HTTP request — resolves as soon as headers arrive
-    let result = match pooled {
-        Some(conn) => {
-            info!("Reusing an open connection to {}:{}", host, port);
-            check_aborted(signal.as_ref())?;
-            // The request is a GET or HEAD without a body, so sending it again is
-            // safe: if the reused connection fails (the server closed it just as
-            // it was picked), the request goes out once more on a new one.
-            match fetch::fetch_headers(conn, &url, method.clone(), headers.clone(), fetch::RequestBody::None, is_https, host, Some(tls_config.clone()), release()).await {
-                Ok(result) => result,
-                Err(e) => {
-                    info!("A reused connection failed ({}); retrying on a new one", e.message);
-                    let stream = connect().await?;
-                    check_aborted(signal.as_ref())?;
-                    fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
-                        .await
-                        .map_err(|e| e.into_js_value())?
+    // Perform the HTTP request — resolves as soon as headers arrive. Raced as a
+    // whole against the abort signal: connecting, TLS, the upload and waiting for
+    // the response head are all cut short, and an abort can never be followed by
+    // the retry on a fresh connection below.
+    let exchange = async {
+        let pooled = if keep_alive { take_idle_connection(&idle, host, port).await } else { None };
+        match pooled {
+            Some(conn) => {
+                info!("Reusing an open connection to {}:{}", host, port);
+                // The request is a GET or HEAD without a body, so sending it again is
+                // safe: if the reused connection fails (the server closed it just as
+                // it was picked), the request goes out once more on a new one.
+                match fetch::fetch_headers(conn, &url, method.clone(), headers.clone(), fetch::RequestBody::None, is_https, host, Some(tls_config.clone()), release()).await {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        info!("A reused connection failed ({}); retrying on a new one", e.message);
+                        let stream = connect().await?;
+                        fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
+                            .await
+                            .map_err(|e| e.into_js_value())
+                    }
                 }
             }
+            None => {
+                let stream = connect().await?;
+                debug!("Connected, making HTTP request...");
+                fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
+                    .await
+                    .map_err(|e| e.into_js_value())
+            }
         }
-        None => {
-            let stream = connect().await?;
-            // Check abort before sending the HTTP request
-            check_aborted(signal.as_ref())?;
-            debug!("Connected, making HTTP request...");
-            fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config), release())
-                .await
-                .map_err(|e| e.into_js_value())?
-        }
+    };
+    let result = match abort.as_mut() {
+        Some(watch) => watch.guard(exchange).await?,
+        None => exchange.await?,
     };
 
     // Build web_sys::Headers from the parsed headers
@@ -855,25 +864,34 @@ async fn fetch_impl(
         }
     }
 
-    // Convert BodyReader → futures::Stream → JS ReadableStream
-    // The signal is threaded through the unfold state so abort is checked between chunks.
-    let body_stream = futures::stream::unfold((result.body_reader, signal), |(mut reader, sig)| async move {
-        if let Some(s) = &sig {
-            if s.aborted() {
-                return Some((Err(JsTorError::aborted().into_js_value()), (reader, sig)));
+    // The Response constructor throws for any body, even an empty stream, with
+    // status 204, 205 or 304, and a HEAD response has none: those get a null body.
+    let raw_readable: Option<web_sys::ReadableStream> = if response_has_body(head_request, result.status) {
+        // Convert BodyReader → futures::Stream → JS ReadableStream. Each read is
+        // raced against the abort signal, so a read already waiting for data ends
+        // at once; after an error (an abort included) the reader is dropped, which
+        // closes the Tor stream, and nothing more is read.
+        let body_stream = futures::stream::unfold(Some((result.body_reader, abort)), |state| async move {
+            let (mut reader, mut abort) = state?;
+            let read = async { reader.read_chunk().await.map_err(|e| e.into_js_value()) };
+            let read = match abort.as_mut() {
+                Some(watch) => watch.guard(read).await,
+                None => read.await,
+            };
+            match read {
+                Ok(Some(chunk)) => {
+                    let arr = js_sys::Uint8Array::from(&chunk[..]);
+                    Some((Ok(arr.into()), Some((reader, abort))))
+                }
+                Ok(None) => None,
+                Err(e) => Some((Err(e), None)),
             }
-        }
-        match reader.read_chunk().await {
-            Ok(Some(chunk)) => {
-                let arr = js_sys::Uint8Array::from(&chunk[..]);
-                Some((Ok(arr.into()), (reader, sig)))
-            }
-            Ok(None) => None,
-            Err(e) => Some((Err(e.into_js_value()), (reader, sig))),
-        }
-    });
-    let readable = wasm_streams::ReadableStream::from_stream(body_stream);
-    let raw_readable: web_sys::ReadableStream = readable.into_raw();
+        });
+        Some(wasm_streams::ReadableStream::from_stream(body_stream).into_raw())
+    } else {
+        drain_unused_body(result.body_reader);
+        None
+    };
 
     // Create ResponseInit with status + headers
     let response_init = web_sys::ResponseInit::new();
@@ -882,7 +900,7 @@ async fn fetch_impl(
 
     // Create the real browser Response
     let response = web_sys::Response::new_with_opt_readable_stream_and_init(
-        Some(&raw_readable),
+        raw_readable.as_ref(),
         &response_init,
     )
     .map_err(|e| JsTorError::internal(format!("Failed to create Response: {:?}", e)).into_js_value())?;
@@ -899,6 +917,39 @@ async fn fetch_impl(
     let _ = js_sys::Reflect::set(&response, &JsValue::from_str("rawHeaders"), &raw_headers);
 
     Ok(response.into())
+}
+
+/// Whether a response can be given a body in JavaScript. A HEAD response has
+/// none, and the Fetch standard's `Response` constructor refuses a body, even an
+/// empty one, for the "null body statuses" 101, 204, 205 and 304.
+fn response_has_body(head_request: bool, status: u16) -> bool {
+    !head_request && !matches!(status, 101 | 204 | 205 | 304)
+}
+
+/// The most a response without a body may still put on the connection before it is closed instead.
+const UNUSED_BODY_LIMIT: usize = 64 * 1024;
+/// How long reading it may take.
+const UNUSED_BODY_TIMEOUT_MS: u32 = 10_000;
+
+/// Read off whatever a response that JavaScript gets no body for still sent
+/// (nothing, for HEAD, 204 and 304; normally nothing for 205, whose framing the
+/// server chooses), so that a keep-alive connection reaches its exact end and
+/// goes back to the pool. A server that sends a body anyway, or never finishes,
+/// gets its connection closed (dropped) after a bound.
+fn drain_unused_body(mut reader: fetch::BodyReader) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let drain = async {
+            let mut seen = 0usize;
+            while let Ok(Some(chunk)) = reader.read_chunk().await {
+                seen += chunk.len();
+                if seen > UNUSED_BODY_LIMIT {
+                    break;
+                }
+            }
+        };
+        let drain = std::pin::pin!(drain);
+        futures::future::select(drain, gloo_timers::future::TimeoutFuture::new(UNUSED_BODY_TIMEOUT_MS)).await;
+    });
 }
 
 /// Extract body from JavaScript FetchInit object
@@ -1097,3 +1148,29 @@ export interface TorClientOptions {
     withStorage(storage: TorStorage): TorClientOptions;
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::response_has_body;
+
+    #[test]
+    fn null_body_statuses_get_no_body() {
+        for status in [101, 204, 205, 304] {
+            assert!(!response_has_body(false, status), "status {status}");
+        }
+    }
+
+    #[test]
+    fn a_head_response_gets_no_body_whatever_its_status() {
+        for status in [200, 404, 500] {
+            assert!(!response_has_body(true, status), "status {status}");
+        }
+    }
+
+    #[test]
+    fn other_responses_keep_their_body() {
+        for status in [200, 201, 206, 301, 302, 400, 404, 500, 502] {
+            assert!(response_has_body(false, status), "status {status}");
+        }
+    }
+}
