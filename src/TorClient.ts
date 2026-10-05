@@ -5,7 +5,9 @@ import {
   addLogListener,
   setListenerLevel,
   wasmOnionAddressFor,
+  hostingAvailable,
 } from './wasm.js';
+import { HostingUnavailableError } from './host/unavailable.js';
 import type { TorClientOptions, FetchInit, LogLevel, TorResponse } from './types.js';
 import { Log, levelEnabled } from './Log.js';
 import { createAutoStorage } from './storage/index.js';
@@ -179,18 +181,22 @@ export class TorClient {
    * For HTTP use `serve()` instead.
    */
   async listen(options: ListenOptions = {}): Promise<Listener> {
+    if (!hostingAvailable()) throw new HostingUnavailableError();
     if (this.closed) throw new Error('TorClient is closed');
     const identity = options.identity ?? TorClient.generateIdentity();
     const client = await this.clientPromise;
     await this.ready();
     if (this.closed) throw new Error('TorClient is closed');
     this.log.info('Starting onion service');
-    const raw = (await client.listen({
+    // Only the host build of the WASM has `listen` (the default build's typings do not), so it is
+    // called through its own shape; hostingAvailable() above made sure it is there.
+    const hostClient = client as unknown as { listen(options: unknown): Promise<RawListener> };
+    const raw = await hostClient.listen({
       identity,
       ports: options.ports,
       maxConnections: options.maxConnections,
       proofOfWork: options.proofOfWork,
-    })) as unknown as RawListener;
+    });
     const listener = wrapListener(raw, identity, (l) => this.listeners.delete(l));
     this.listeners.add(listener);
     this.log.info(`Onion service started: ${listener.onion}`);
@@ -222,6 +228,7 @@ export class TorClient {
 
   /** The `.onion` address an identity hosts at, without going online. */
   static async onionAddress(identity: Uint8Array): Promise<string> {
+    if (!hostingAvailable()) throw new HostingUnavailableError();
     await ensureWasmInitialized();
     return wasmOnionAddressFor(identity);
   }

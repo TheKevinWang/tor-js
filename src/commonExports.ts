@@ -2,6 +2,7 @@
 
 export type { Connection, Handler, Listener, ListenOptions, PowStats, ServeLimits } from './host/types.js';
 export { serve as serveHttp } from './host/http.js';
+export { HostingUnavailableError } from './host/unavailable.js';
 export type { TorClientOptions, FetchInit, TorResponse, TorStorage, RtcPeer, RtcPeerFactory, RtcSocket } from './types.js';
 export { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from './snowflake.js';
 export { Log, type LogLevel } from './Log.js';

@@ -14,7 +14,7 @@
 // anything (measured: it stays alive 45 s+ after close()), which is why the live scripts end in
 // process.exit(0). That is existing behaviour, recorded in the ExecPlan, not part of hosting.
 
-import { TorClient, storage } from '../dist/entryPoints/wasm-file/index.js'
+import { TorClient, storage } from '../dist/entryPoints/host-file/index.js'
 
 const t0 = performance.now()
 const say = (msg) => console.log(`[${((performance.now() - t0) / 1000).toFixed(1)}s] ${msg}`)

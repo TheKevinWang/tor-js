@@ -11,3 +11,4 @@ export { Log } from '../../../src/Log.js';
 export { MemoryStorage } from '../../../src/storage/index.js';
 export { tor } from '../../../src/singleton.js';
 export { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from '../../../src/snowflake.js';
+export { HostingUnavailableError } from '../../../src/host/unavailable.js';

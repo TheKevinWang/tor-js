@@ -102,7 +102,7 @@ jobs:
           echo "host:   $(rustc -vV | sed -ne 's/^host: //p')"
           rustc --version && wasm-pack --version && node --version
           wasm-opt --version 2>/dev/null || echo "wasm-opt: not on PATH (wasm-pack-managed)"
-          sha256sum dist/anon-rpc-worker.js dist/tor_js_bg.wasm
+          sha256sum dist/anon-rpc-worker.js dist/tor_js_bg.wasm dist/tor_js_host_bg.wasm
 
       # TypeScript unit tests, all against fakes — no network. Covers gateway
       # selection, the KPS-HTTP/1 client, the KPS address parser, both storage

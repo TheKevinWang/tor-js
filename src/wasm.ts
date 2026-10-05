@@ -5,10 +5,29 @@ import initWasm, {
   setLogLevel as wasmSetLogLevel,
   TorClient as WasmTorClient,
   TorClientOptions as WasmTorClientOptions,
-  onionAddressFor as wasmOnionAddressFor,
 } from '#wasm';
+import * as wasmModule from '#wasm';
+import { HostingUnavailableError } from './host/unavailable.js';
 
-export { WasmTorClient, WasmTorClientOptions, wasmOnionAddressFor };
+export { WasmTorClient, WasmTorClientOptions };
+
+// Hosting an onion service is a separate build of the WASM (see Cargo feature `onion-service-host`),
+// and this file is bundled against either build's JavaScript glue, so what only the host build exports
+// is looked up by name at run time (a named import of something the default glue lacks would not bundle).
+const HOST_EXPORT = 'onionAddressFor';
+const glue = wasmModule as unknown as Record<string, unknown>;
+
+/** Whether the WASM this module was bundled with can host an onion service. */
+export function hostingAvailable(): boolean {
+  return typeof glue[HOST_EXPORT] === 'function';
+}
+
+/** The address an identity hosts at (host build only). */
+export function wasmOnionAddressFor(identity: Uint8Array): string {
+  const f = glue[HOST_EXPORT] as ((identity: Uint8Array) => string) | undefined;
+  if (!f) throw new HostingUnavailableError();
+  return f(identity);
+}
 
 // ============================================================================
 // Log listener management

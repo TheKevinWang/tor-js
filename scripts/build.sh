@@ -100,7 +100,7 @@ fi
 
 # Start from a clean dist/ so stale artifacts never leak into a build (or a
 # published tarball).
-rm -rf dist
+rm -rf dist crates/tor-js-wasm/pkg-host
 
 echo "Building tor-js WASM ($PROFILE)..."
 # --locked: the committed Cargo.lock is part of the reproducible input set; if
@@ -111,6 +111,14 @@ wasm-pack build crates/tor-js-wasm --target web $PROFILE -- --locked
 cp crates/tor-js-wasm/README.md crates/tor-js-wasm/pkg/
 
 echo "WASM package available at: crates/tor-js-wasm/pkg/"
+
+# The second WASM: the same crate with the onion service code (Cargo feature `onion-service-host`), for
+# the tor-js/host entry points. The default build above has none of it, so its WASM stays small. Same
+# toolchain, flags and --locked, so it is just as reproducible.
+echo "Building tor-js host WASM ($PROFILE)..."
+wasm-pack build crates/tor-js-wasm --target web $PROFILE --out-dir pkg-host --out-name tor_js_host -- --locked --features onion-service-host
+
+echo "Host WASM package available at: crates/tor-js-wasm/pkg-host/"
 
 # Build the TypeScript wrapper. Call build.mjs directly rather than
 # `npm run build` to avoid recursing back into this script.

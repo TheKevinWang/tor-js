@@ -8,17 +8,23 @@ import { build as esbuildBuild } from 'esbuild';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(__dirname, 'crates/tor-js-wasm/pkg');
+// The second build of the WASM, with the onion service code (Cargo feature `onion-service-host`):
+//   wasm-pack build crates/tor-js-wasm --target web --release --out-dir pkg-host --out-name tor_js_host -- --locked --features onion-service-host
+const pkgHostDir = resolve(__dirname, 'crates/tor-js-wasm/pkg-host');
 const distDir = resolve(__dirname, 'dist');
 
 async function main() {
   const { wasmBytes, wasmHash } = computeWasmHash();
+  const host = computeHostWasmHash();
   const version = readPackageVersion();
   const base64File = generateBase64Data(wasmBytes);
+  const hostBase64File = generateHostBase64Data(host.wasmBytes);
 
   const steps = [
     cleanDist,
-    () => runTsup(wasmHash, version),
+    () => runTsup(wasmHash, host.wasmHash, version),
     () => cleanBase64Data(base64File),
+    () => cleanBase64Data(hostBase64File),
     generateDeclarationMaps,
     copyWasmFiles,
     buildWorker,
@@ -163,6 +169,18 @@ function computeWasmHash() {
   return { wasmBytes, wasmHash };
 }
 
+function computeHostWasmHash() {
+  const wasmPath = resolve(pkgHostDir, 'tor_js_host_bg.wasm');
+  if (!existsSync(wasmPath)) {
+    console.error(`The host build of the WASM is missing: ${wasmPath}\nBuild it first:\n  wasm-pack build crates/tor-js-wasm --target web --release --out-dir pkg-host --out-name tor_js_host -- --locked --features onion-service-host`);
+    process.exit(1);
+  }
+  const wasmBytes = readFileSync(wasmPath);
+  const wasmHash = createHash('sha256').update(wasmBytes).digest('hex');
+  console.log(`Host WASM SHA256: ${wasmHash}`);
+  return { wasmBytes, wasmHash };
+}
+
 function readPackageVersion() {
   const packageJson = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
   console.log(`Package version: ${packageJson.version}`);
@@ -177,13 +195,22 @@ function generateBase64Data(wasmBytes) {
   return base64File;
 }
 
-function runTsup(wasmHash, version) {
+function generateHostBase64Data(wasmBytes) {
+  const base64Data = wasmBytes.toString('base64');
+  const base64File = resolve(__dirname, 'src', '_wasm-host-base64-data.generated.js');
+  writeFileSync(base64File, `export const wasmBase64 = "${base64Data}";\n`);
+  console.log(`Generated host base64 data (${(base64Data.length / 1024 / 1024).toFixed(1)} MB)`);
+  return base64File;
+}
+
+function runTsup(wasmHash, hostWasmHash, version) {
   execSync('npx tsup', {
     stdio: 'inherit',
     cwd: __dirname,
     env: {
       ...process.env,
       WASM_SHA256: wasmHash,
+      WASM_HOST_SHA256: hostWasmHash,
       PACKAGE_VERSION: version,
     },
   });
@@ -209,6 +236,12 @@ function copyWasmFiles() {
   copyFileSync(resolve(pkgDir, 'tor_js.js'), resolve(distWasm, 'tor_js.js'));
   copyFileSync(resolve(pkgDir, 'tor_js.d.ts'), resolve(distWasm, 'tor_js.d.ts'));
   copyFileSync(resolve(pkgDir, 'tor_js_bg.wasm'), resolve(distDir, 'tor_js_bg.wasm'));
+  // The host build: its own glue (dist/wasm-pkg-host/) and binary (dist/tor_js_host_bg.wasm).
+  const distWasmHost = resolve(distDir, 'wasm-pkg-host');
+  mkdirSync(distWasmHost, { recursive: true });
+  copyFileSync(resolve(pkgHostDir, 'tor_js_host.js'), resolve(distWasmHost, 'tor_js_host.js'));
+  copyFileSync(resolve(pkgHostDir, 'tor_js_host.d.ts'), resolve(distWasmHost, 'tor_js_host.d.ts'));
+  copyFileSync(resolve(pkgHostDir, 'tor_js_host_bg.wasm'), resolve(distDir, 'tor_js_host_bg.wasm'));
   console.log('Copied WASM runtime files to dist/');
 }
 
@@ -241,6 +274,9 @@ function verifyGzipSizes() {
     { name: 'tor-js', files: ['dist/entryPoints/wasm-cdn/index.js'] },
     { name: 'tor-js/wasm-base64', files: ['dist/entryPoints/wasm-base64/index.js'] },
     { name: 'tor-js/wasm-file', files: ['dist/entryPoints/wasm-file/index.js', 'dist/tor_js_bg.wasm'] },
+    { name: 'tor-js/host', files: ['dist/entryPoints/host-cdn/index.js'] },
+    { name: 'tor-js/host/wasm-base64', files: ['dist/entryPoints/host-base64/index.js'] },
+    { name: 'tor-js/host/wasm-file', files: ['dist/entryPoints/host-file/index.js', 'dist/tor_js_host_bg.wasm'] },
   ];
 
   function formatSize(bytes) {

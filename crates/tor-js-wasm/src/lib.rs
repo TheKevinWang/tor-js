@@ -38,7 +38,10 @@ mod fast_bootstrap;
 mod fetch;
 mod pow;
 mod bridges;
+// Hosting an onion service is a separate build (feature `onion-service-host`): see Cargo.toml.
+#[cfg(feature = "onion-service-host")]
 mod host;
+#[cfg(feature = "onion-service-host")]
 mod identity;
 mod conn_pool;
 mod runtime;

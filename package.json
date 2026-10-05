@@ -22,6 +22,18 @@
       "types": "./dist/entryPoints/wasm-base64/index.d.ts",
       "import": "./dist/entryPoints/wasm-base64/index.js"
     },
+    "./host": {
+      "types": "./dist/entryPoints/host-cdn/index.d.ts",
+      "import": "./dist/entryPoints/host-cdn/index.js"
+    },
+    "./host/wasm-file": {
+      "types": "./dist/entryPoints/host-file/index.d.ts",
+      "import": "./dist/entryPoints/host-file/index.js"
+    },
+    "./host/wasm-base64": {
+      "types": "./dist/entryPoints/host-base64/index.d.ts",
+      "import": "./dist/entryPoints/host-base64/index.js"
+    },
     "./singleton": {
       "types": "./dist/entryPoints/wasm-cdn/singleton.d.ts",
       "import": "./dist/entryPoints/wasm-cdn/singleton.js"
@@ -45,7 +57,8 @@
     "./site/tor-site-sw.js": "./dist/site/tor-site-sw.js",
     "./site/tor-site-host.js": "./dist/site/tor-site-host.js",
     "./site/tor-site.js": "./dist/site/tor-site.js",
-    "./tor_js_bg.wasm": "./dist/tor_js_bg.wasm"
+    "./tor_js_bg.wasm": "./dist/tor_js_bg.wasm",
+    "./tor_js_host_bg.wasm": "./dist/tor_js_host_bg.wasm"
   },
   "imports": {
     "#wasm": "./dist/wasm-pkg/tor_js.js",

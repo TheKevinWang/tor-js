@@ -12,7 +12,7 @@ const connectBtn = $('connect'), disconnectBtn = $('disconnect');
 const stepHost = $('step-host'), stepVisit = $('step-visit');
 const hostDot = $('host-dot'), hostStatus = $('host-status'), addressEl = $('address');
 const goOnline = $('go-online'), goOffline = $('go-offline'), newIdentity = $('new-identity');
-const requestsEl = $('requests');
+const requestsEl = $('requests'), powEl = $('pow-status');
 const urlInput = $('url'), fetchBtn = $('fetch'), responseEl = $('response');
 const logEl = $('log'), logDrawer = $('log-drawer'), logToggle = $('log-toggle');
 const logLatest = $('log-latest'), logCount = $('log-count');
@@ -22,6 +22,7 @@ let client = null;
 let TorLib = null; // imported on connect, so the WASM only loads when asked
 let service = null;
 let releaseLock = null;
+let powTimer = null;
 let count = 0;
 
 const escapeHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -91,7 +92,8 @@ connectBtn.addEventListener('click', async () => {
   setStatus('loading', 'Connecting…');
   log('info', 'Loading tor-js…');
   try {
-    if (!TorLib) TorLib = await import('tor-js/wasm-base64');
+    // The build of tor-js that can host (about 330 kB larger than the one that only visits).
+    if (!TorLib) TorLib = await import('tor-js/host/wasm-base64');
     const { TorClient, Log, SNOWFLAKE_BRIDGES } = TorLib;
     const t0 = performance.now();
     client = new TorClient({
@@ -116,7 +118,17 @@ connectBtn.addEventListener('click', async () => {
   }
 });
 
+function showPow() {
+  const p = service?.pow;
+  if (!p) { powEl.textContent = 'Offline'; return; }
+  powEl.textContent = p.enabled
+    ? `on · asking visitors for effort ${p.suggestedEffort} · ${p.verified} verified, ${p.rejected} rejected · ${p.queueLength} waiting, ${p.dropped} dropped`
+    : 'off';
+}
+
 async function stopHosting() {
+  clearInterval(powTimer);
+  powTimer = null;
   service?.close();
   service = null;
   releaseLock?.();
@@ -125,6 +137,7 @@ async function stopHosting() {
   goOffline.disabled = true;
   newIdentity.disabled = false;
   setHostStatus('', 'Offline');
+  powEl.textContent = 'Offline';
 }
 
 disconnectBtn.addEventListener('click', async () => {
@@ -176,6 +189,8 @@ goOnline.addEventListener('click', async () => {
     setHostStatus('ok', 'Online (it may take a few seconds before visitors can reach it)');
     goOffline.disabled = false;
     urlInput.value = `http://${service.onion}/`;
+    showPow();
+    powTimer = setInterval(showPow, 2000);
   } catch (e) {
     log('error', e?.message || String(e));
     setHostStatus('err', 'Could not start');

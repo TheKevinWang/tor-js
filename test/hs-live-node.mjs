@@ -2,14 +2,15 @@
 // visits it, both over the real Tor network through Snowflake. See
 // .agent/onion-service-host-execplan.md.
 //
-//   (build first: wasm-pack build crates/tor-js-wasm --target web --release -- --locked && node build.mjs)
+//   (build first, on Windows: the two wasm-pack commands and then node build.mjs; see the ExecPlan
+//    .agent/host-pow-and-optional-host-execplan.md. Hosting is in the host build: tor-js/host)
 //   node test/hs-live-node.mjs
 //
 // A new onion service needs time before visitors can reach it (it must set up introduction points
 // and publish where they are), so the visitor retries for up to five minutes; early failures are
 // expected and are not a failure of the test.
 
-import { TorClient, storage } from '../dist/entryPoints/wasm-file/index.js'
+import { TorClient, storage } from '../dist/entryPoints/host-file/index.js'
 
 const t0 = performance.now()
 const secs = () => `[${((performance.now() - t0) / 1000).toFixed(1)}s]`
