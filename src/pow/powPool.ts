@@ -42,6 +42,13 @@ export interface PowSolverOptions {
   workerUrl: string;
   /** URL of the project's WASM file, which each worker loads. */
   wasmUrl: string;
+  /**
+   * The WASM file's bytes, when a worker cannot load it from `wasmUrl` (Node cannot `fetch` a `file:` URL;
+   * the page may only have the bytes). Sent to every worker with every solve, so prefer a URL where one works.
+   */
+  wasmBytes?: Uint8Array;
+  /** Which build of the WASM `wasmUrl` / `wasmBytes` is (see {@link PowWorkerRequest.variant}). */
+  variant?: 'host';
   /** How many workers to start; default {@link defaultWorkerCount}. */
   workers?: number;
   /** Creates a worker; default `new Worker(url)`. */
@@ -59,6 +66,10 @@ export type PowSolver = (blindId: Uint8Array, seed: Uint8Array, effort: number, 
 export type PowWorkerRequest = {
   t: 'solve';
   wasmUrl: string;
+  /** Used instead of `wasmUrl` when present. */
+  wasmBytes?: Uint8Array;
+  /** Which build of the WASM this is: "host" for the one that can host an onion service, else the default. */
+  variant?: 'host';
   blindId: Uint8Array;
   seed: Uint8Array;
   effort: number;
@@ -144,7 +155,7 @@ export function createPowSolver(options: PowSolverOptions): PowSolver {
       };
       worker.onerror = (event) => failed(event.message ?? 'a worker failed', worker);
       const request: PowWorkerRequest = {
-        t: 'solve', wasmUrl: options.wasmUrl, blindId, seed, effort, startNonce: random(16),
+        t: 'solve', wasmUrl: options.wasmUrl, wasmBytes: options.wasmBytes, variant: options.variant, blindId, seed, effort, startNonce: random(16),
       };
       try {
         worker.postMessage(request);

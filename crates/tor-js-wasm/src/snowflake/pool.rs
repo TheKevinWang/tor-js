@@ -14,6 +14,7 @@ use futures::future::{select, Either};
 use futures::AsyncReadExt;
 use gloo_timers::future::TimeoutFuture;
 use std::cell::{Cell, RefCell};
+use std::task::Waker;
 use std::collections::HashMap;
 use std::io;
 use std::pin::pin;
@@ -41,6 +42,35 @@ thread_local! {
     static POOLS: RefCell<HashMap<CarrierConfig, Rc<Pool>>> = RefCell::new(HashMap::new());
     /// How many clients that use Snowflake are alive (see [`Lease`]).
     static LEASES: Cell<usize> = const { Cell::new(0) };
+    /// Counts the times the last client using Snowflake closed. A session opened in an earlier epoch belongs
+    /// to clients that are gone and ends at its next read or write (see [`session_closed`]).
+    static EPOCH: Cell<u64> = const { Cell::new(0) };
+    /// Wakers of the tasks using sessions, woken when the epoch changes so that they notice at once.
+    static WATCHERS: RefCell<Vec<Waker>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The current epoch (see `EPOCH`): a session records the one it was opened in.
+pub(super) fn epoch() -> u64 {
+    EPOCH.with(Cell::get)
+}
+
+/// Whether a session opened in epoch `born` has been closed because every client that used Snowflake has
+/// closed. When it has not, `waker` is remembered so that the session is polled again the moment it is.
+///
+/// Closing the session matters because arti does not abort work it has in flight when a client closes (a
+/// descriptor upload, a circuit build): those run until their own timeouts, minutes on a bad network, and
+/// the open connection keeps a Node process alive meanwhile. Ending the session makes them fail at once.
+pub(super) fn session_closed(born: u64, waker: &Waker) -> bool {
+    if epoch() != born {
+        return true;
+    }
+    WATCHERS.with(|w| {
+        let mut w = w.borrow_mut();
+        if !w.iter().any(|known| known.will_wake(waker)) {
+            w.push(waker.clone());
+        }
+    });
+    false
 }
 
 /// Held by every client that uses Snowflake for as long as it lives (see `TorClient.close()`).
@@ -66,6 +96,12 @@ impl Drop for Lease {
         });
         if remaining == 0 {
             release_parked();
+            // End every session still in use: they belong to clients that are gone.
+            EPOCH.with(|e| e.set(e.get() + 1));
+            let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+            for waker in watchers {
+                waker.wake();
+            }
         }
     }
 }

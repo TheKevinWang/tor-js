@@ -17,4 +17,4 @@ setWasmSourceProvider(async () => {
   const resp = await fetch(new URL('../../tor_js_host_bg.wasm', import.meta.url));
   if (!resp.ok) throw new Error(`Failed to fetch WASM: HTTP ${resp.status}`);
   return new Uint8Array(await resp.arrayBuffer());
-});
+}, { url: new URL('../../tor_js_host_bg.wasm', import.meta.url).href, variant: 'host' });

@@ -30,6 +30,11 @@ const { TorClient, storage } = await import(pathToFileURL(fileURLToPath(new URL(
 await initSolver({ module_or_path: readFileSync(new URL('../dist/tor_js_bg.wasm', import.meta.url)) })
 
 // An unhandled rejection is a failure, and its stack is the evidence: print it before dying.
+// An uncaught exception is a failure too; "origin" says whether it was thrown or was a rejection nobody handled.
+process.on('uncaughtException', (e, origin) => {
+  console.error(`FAIL: uncaught exception (origin: ${origin}):`, e?.stack ?? e, e?.cause ? '\ncause: ' + (e.cause?.stack ?? e.cause) : '')
+  process.exit(1)
+})
 process.on('unhandledRejection', (e) => {
   console.error('FAIL: unhandled rejection:', e?.stack ?? e, e?.cause ? '\ncause: ' + (e.cause?.stack ?? e.cause) : '')
   process.exit(1)

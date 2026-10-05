@@ -19,7 +19,7 @@ scope.onmessage = async (event) => {
   const request = event.data;
   if (request?.t !== 'solve') return;
   try {
-    await initWasm({ module_or_path: request.wasmUrl });
+    await initWasm({ module_or_path: request.wasmBytes ?? request.wasmUrl });
     const solution = powSolveV1(request.blindId, request.seed, request.effort, request.startNonce);
     scope.postMessage({ t: 'solved', solution });
   } catch (e) {

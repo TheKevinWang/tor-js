@@ -10,14 +10,11 @@
 // Each scenario runs in a child process that never calls process.exit. A scenario passes when the child
 // ends with code 0 within its limit of seconds after printing CLOSED.
 //
-// The limit is generous (90 s) because closing does not abort work arti already has in flight. Typically
-// the process ends within a second of close() (0.2 s measured for a client that finished bootstrapping,
-// about 1 s for a service closed right after launch), but arti lets in-flight work run out before it lets go
-// of the connection (descriptor uploads, circuit builds, directory downloads), and its own timeouts bound
-// that at about 60 s: tails of 14 s and 60 s were measured in a minority of runs. A client closed while it
-// is still bootstrapping can only be closed when bootstrap finishes. What this test asserts is the part
-// that matters: the process ALWAYS ends by itself, in bounded time. Before the fix it did not end at all.
-
+// Closing ends every Snowflake session the closed clients used (src: crates/tor-js-wasm/src/snowflake/pool.rs,
+// `Lease` and the session epoch), so what arti still has in flight (descriptor uploads, circuit builds) fails at
+// once instead of running out its own timeouts, which took minutes on a bad network. Measured: the process ends
+// 0.2 s after close() in the first and third scenarios, every run. The second closes a client that has not
+// finished bootstrapping: the close can only happen when bootstrap does, so its limit covers the bootstrap.
 import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -33,20 +30,20 @@ const mk = () => new TorClient({ snowflake: true, storage: new storage.MemorySto
 `
 
 const scenarios = {
-  'a client that became ready, then closed': { limit: 90, source: `${head('entryPoints/wasm-file/index.js')}
+  'a client that became ready, then closed': { limit: 15, source: `${head('entryPoints/wasm-file/index.js')}
 const c = mk()
 await c.ready()
 c.close()
 console.log('CLOSED')` },
 
-  'a client closed while it was still bootstrapping': { limit: 90, source: `${head('entryPoints/wasm-file/index.js')}
+  'a client closed while it was still bootstrapping': { limit: 60, source: `${head('entryPoints/wasm-file/index.js')}
 const c = mk()
 c.ready().catch(() => {})
 await new Promise((r) => setTimeout(r, 3000))
 c.close()
 console.log('CLOSED')` },
 
-  'a hosted onion service, then closed': { limit: 90, source: `${head('entryPoints/host-file/index.js')}
+  'a hosted onion service, then closed': { limit: 15, source: `${head('entryPoints/host-file/index.js')}
 const c = mk()
 const service = await c.serve(() => new Response('hi'))
 service.close()

@@ -18,4 +18,4 @@ setWasmSourceProvider(createCdnWasmSource({
   packageVersion: __PACKAGE_VERSION__,
   cacheKey: 'wasm-host',
   githubMirror: false,
-}));
+}), { variant: 'host' });

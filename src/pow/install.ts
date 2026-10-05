@@ -46,10 +46,22 @@ export function installPowSolver(
       acquirePort: options.acquirePort!,
       pool: { workerUrl: options.workerUrl, wasmUrl: options.wasmUrl, workers: options.workers },
     });
-  const g = globalThis as PowGlobals;
+  return installSolverFunction(solve, options);
+}
+
+/**
+ * Make `solve` the function the Tor client calls to solve a puzzle, with these settings. Returns a function
+ * that puts back whatever was there before. `globals` is where the Tor client looks (the realm's global).
+ */
+export function installSolverFunction(
+  solve: (blindId: Uint8Array, seed: Uint8Array, effort: number) => Promise<unknown>,
+  settings: PowSettings,
+  globals: object = globalThis,
+): () => void {
+  const g = globals as PowGlobals;
   const previous = { solve: g.__torJsPowSolve, config: g.__torJsPowConfig };
   g.__torJsPowSolve = (blindId, seed, effort) => solve(blindId, seed, effort);
-  g.__torJsPowConfig = { maxEffort: options.maxEffort, minEffort: options.minEffort };
+  g.__torJsPowConfig = { maxEffort: settings.maxEffort, minEffort: settings.minEffort };
   return () => {
     g.__torJsPowSolve = previous.solve;
     g.__torJsPowConfig = previous.config;

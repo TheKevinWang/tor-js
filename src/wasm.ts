@@ -97,6 +97,11 @@ type WasmSourceProvider = () => Promise<BufferSource | Uint8Array>;
 let initPromise: Promise<void> | null = null;
 let customWasmUrl: string | URL | undefined;
 let wasmSourceProvider: WasmSourceProvider | undefined;
+// A URL the WASM can be loaded from, when the entry point knows one (file entries do). Used by proof-of-work
+// workers so they need not be sent the 5 MB bytes.
+let wasmUrlHint: string | undefined;
+// Which build of the WASM the entry point loads ("host" for the one that can host an onion service).
+let wasmVariant: 'host' | undefined;
 
 /**
  * Override the WASM binary URL. Must be called before any TorClient is created.
@@ -113,11 +118,30 @@ export function setWasmUrl(url: string | URL): void {
  * how the WASM binary is loaded (e.g. base64 decode, CDN fetch).
  * Must be called before any TorClient is created.
  */
-export function setWasmSourceProvider(provider: WasmSourceProvider): void {
+export function setWasmSourceProvider(provider: WasmSourceProvider, options?: { url?: string; variant?: 'host' }): void {
   if (initPromise) {
     throw new Error('setWasmSourceProvider() must be called before any TorClient is created');
   }
   wasmSourceProvider = provider;
+  wasmUrlHint = options?.url;
+  wasmVariant = options?.variant;
+}
+
+/** Where the WASM can be had: a URL for workers when one is known, and always its bytes. */
+export function getWasmLocation(): { url?: string; variant?: 'host'; bytes(): Promise<Uint8Array> } {
+  return {
+    variant: wasmVariant,
+    url: customWasmUrl !== undefined ? String(customWasmUrl) : wasmUrlHint,
+    bytes: async () => {
+      if (wasmSourceProvider) return new Uint8Array(await wasmSourceProvider() as ArrayBufferLike);
+      if (customWasmUrl !== undefined) {
+        const res = await fetch(customWasmUrl);
+        if (!res.ok) throw new Error(`cannot load the WASM from ${String(customWasmUrl)}: HTTP ${res.status}`);
+        return new Uint8Array(await res.arrayBuffer());
+      }
+      throw new Error('No WASM source configured');
+    },
+  };
 }
 
 /**

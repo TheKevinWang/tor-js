@@ -46,12 +46,12 @@ The package offers three ways to load the WASM binary. All export the same API.
 
 | Import | WASM loading | Size (gzip) | Best for |
 |---|---|---|---|
-| `tor-js` | Fetched from CDN, cached locally | 42 kB | Production web apps |
+| `tor-js` | Fetched from CDN, cached locally | 44 kB | Production web apps |
 | `tor-js/wasm-base64` | Embedded in the JS bundle | 2.8 MB | Single-file deploys |
-| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 40 kB + 2.0 MB | Self-hosted, server-side |
-| `tor-js/host` | Like `tor-js`, for the build that can host an onion service | 42 kB | Pages that host an onion service |
+| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 43 kB + 2.0 MB | Self-hosted, server-side |
+| `tor-js/host` | Like `tor-js`, for the build that can host an onion service | 45 kB | Pages that host an onion service |
 | `tor-js/host/wasm-base64` | Like `tor-js/wasm-base64`, host build | 3.2 MB | Single-file deploys that host |
-| `tor-js/host/wasm-file` | Loaded from `tor_js_host_bg.wasm` next to the module | 41 kB + 2.4 MB | Self-hosted or server-side that host |
+| `tor-js/host/wasm-file` | Loaded from `tor_js_host_bg.wasm` next to the module | 44 kB + 2.4 MB | Self-hosted or server-side that host |
 
 Each also has a `/singleton` variant (see [Singleton](#singleton) below).
 
@@ -73,6 +73,7 @@ type TorClientOptions = {
   snowflake?: boolean | 'websocket' | 'webrtc'; // Reach Tor via Snowflake, no gateway (see below)
   bridges?: string[];                  // Bridge lines to use as the only guards
   bootstrapUrl?: string;               // Directory snapshot (bootstrap.zip.zst) to start from
+  pow?: false | { workers?: number; maxEffort?: number; minEffort?: number; workerUrl?: string }; // Pay proof of work when a service asks (default: on; see below)
 };
 ```
 
@@ -148,6 +149,18 @@ Close the client and release resources. Also available as `Symbol.dispose` for u
 } // automatically closed
 ```
 
+### Paying for priority (`pow`)
+
+A busy onion service asks its visitors to prove they did some computation (proof of work) and serves the ones who did the most first. By default a `TorClient` pays when a service asks, with nothing to set up: when it is created in a page or in Node it installs a solver that runs the work on worker threads (Web Workers in a page, `worker_threads` in Node), started only when a puzzle comes. Against an idle service nothing is paid. Where workers cannot be started (a SharedWorker, a Service Worker) it installs nothing and the client connects without a solution, served after those who paid, as before.
+
+```javascript
+new TorClient({ snowflake: true, pow: { maxEffort: 500 } });  // pay at most 500
+new TorClient({ snowflake: true, pow: { minEffort: 8 } });    // always pay at least 8, to go ahead of the queue
+new TorClient({ snowflake: true, pow: false });               // never pay
+```
+
+`maxEffort` is the most it will pay (default 2000, about four minutes of one core, divided among the workers), `minEffort` the least whenever the service uses proof of work (default 0), `workers` how many per puzzle (default one less than the core count, at most 8), `workerUrl` where the worker script is (default `pow-worker.js` in a page, or `pow-node-worker.js` in Node, next to the module; the package ships both. A dev server or bundler that does not serve the package's own files needs `workerUrl` pointing at a served copy of `pow-worker.js`). The solver is shared by every client in the same page or process, so the first client's settings apply, and it never replaces a solver that is already installed (the static-site adapter's, or your own function at `globalThis.__torJsPowSolve`). It is removed when the last client that asked for it closes.
+
 ## Hosting an onion service
 
 A page or a Node process can be an onion service, not only visit one: a website at a `.onion` address with no server behind it. An onion service never accepts inbound connections (it dials out to Tor relays, so it works behind any firewall and inside a browser tab). Visitors do not learn the host's network address and the host does not learn theirs. This makes anonymous browser-to-browser communication possible: a private file drop, a chat, an API that lives in a tab.
@@ -177,7 +190,7 @@ service.close(); // take it offline
 
 **Options** (both methods): `identity`, `ports` (default `[80]`; a visitor asking for another is refused), `maxConnections` (default 32; more are refused), `proofOfWork` (below). `serve` also takes `maxHeadBytes` (16 KiB), `maxBodyBytes` (1 MiB), `headTimeoutMs` (30 s) and `bodyTimeoutMs` (60 s): the server is small and strict, answers one request per connection, and rejects ambiguous framing. In a browser, `request.headers` lacks the names browsers treat as forbidden (`Host`, `Cookie`, `Content-Length`, ...); the URL carries the host.
 
-**Proof of work** is a defence against floods. It is on by default; `proofOfWork: false` turns it off. The service publishes a puzzle in its descriptor. While it is idle it asks visitors for no effort and they send no solution. When requests arrive faster than it serves them, it raises the effort it asks for (re-evaluated every five minutes), verifies the solutions it receives, and serves the highest effort first. A visitor that pays nothing is served after those that did, and when the queue is full (`proofOfWork: { queueDepth }`, default 256) the lowest effort is dropped. A visitor that cannot solve still connects while the service is not busy. `service.pow` reports `{ enabled, verified, rejected, enqueued, dropped, queueLength, suggestedEffort, maxEffortSeen }`: read it again for fresh numbers; after `close()` it is the final reading. A visiting tor-js client pays when a solver is installed (see [Onion services that ask for proof of work](#onion-services-that-ask-for-proof-of-work)).
+**Proof of work** is a defence against floods. It is on by default; `proofOfWork: false` turns it off. The service publishes a puzzle in its descriptor. While it is idle it asks visitors for no effort and they send no solution. When requests arrive faster than it serves them, it raises the effort it asks for (re-evaluated every five minutes), verifies the solutions it receives, and serves the highest effort first. A visitor that pays nothing is served after those that did, and when the queue is full (`proofOfWork: { queueDepth }`, default 256) the lowest effort is dropped. A visitor that cannot solve still connects while the service is not busy. `service.pow` reports `{ enabled, verified, rejected, enqueued, dropped, queueLength, suggestedEffort, maxEffortSeen }`: read it again for fresh numbers; after `close()` it is the final reading. A visiting tor-js client pays by default (see [Paying for priority](#paying-for-priority-pow)).
 
 **Limits you should know.**
 

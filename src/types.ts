@@ -14,6 +14,22 @@ export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
  */
 export type TorClientOptions = {
   /**
+   * Paying proof of work when an onion service asks for it. An onion service that is busy asks visitors
+   * to prove they did some computation and serves the ones who did the most first; by default this client
+   * does the work, on worker threads (Web Workers in a page, `worker_threads` in Node), when it is created
+   * where those exist, and otherwise connects without offering any (served last, as before). It never
+   * replaces a solver that is already installed, and the solver is shared by every client in the same page
+   * or process, so the settings of the first client apply. `false` turns it off.
+   *
+   * - `maxEffort`: the most effort to pay; default 2000 (about 4 minutes of one core; workers divide it).
+   * - `minEffort`: the least effort to pay whenever the service uses proof of work, even if it asks for none;
+   *   default 0. Paying more than asked gets priority over visitors who pay less.
+   * - `workers`: workers per puzzle; default one less than the core count, at most 8.
+   * - `workerUrl`: the worker script, if not the one shipped next to this module.
+   */
+  pow?: false | { workers?: number; maxEffort?: number; minEffort?: number; workerUrl?: string };
+
+  /**
    * Gateway KPS address(es) (`ip:port:certhash`, e.g.
    * `"198.51.100.7:12298:uEiAxk...9Qw"` — printed by tor-js-gateway at
    * startup). Pass several redundant gateways to fail over and spread load

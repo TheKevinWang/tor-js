@@ -15,7 +15,7 @@ const common: Options = {
   clean: false, // build.mjs handles cleaning
   splitting: false,
   target: 'es2022',
-  external: ['node:fs/promises', 'node:os', 'node:path', 'node:url', 'node:crypto'],
+  external: ['node:fs/promises', 'node:os', 'node:path', 'node:url', 'node:crypto', 'node:worker_threads'],
   // Bundle the KPS browser client (small, zero-dep ESM) so the dist works
   // without a bundler or import map. The optional Node QUIC transport is
   // imported via a non-literal specifier and stays external.

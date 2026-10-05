@@ -65,6 +65,8 @@ enum Connection<S> {
 }
 
 pub(crate) struct TurboSession<S> {
+    /// The epoch this session was opened in (see `pool::session_closed`).
+    born: u64,
     client_id: [u8; 8],
     dial: Dial<S>,
     connection: Connection<S>,
@@ -117,7 +119,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + 'static> TurboSession<S> {
     /// the caller rather than redialed.
     pub(crate) async fn open(dial: Dial<S>, client_id: [u8; 8]) -> io::Result<Self> {
         let turbo = connect(dial.clone(), client_id).await?;
-        Ok(Self { client_id, dial, connection: up(turbo), silent_connections: 0 })
+        Ok(Self { born: super::pool::epoch(), client_id, dial, connection: up(turbo), silent_connections: 0 })
     }
 
     fn redial(&mut self, reason: &str) {
@@ -136,6 +138,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + 'static> TurboSession<S> {
     }
 
     fn poll_up(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Every client that used Snowflake has closed: end the session, so that what arti still has in flight
+        // on it fails at once instead of running out its timeouts (and does not redial).
+        if super::pool::session_closed(self.born, cx.waker()) && !matches!(self.connection, Connection::Failed(_)) {
+            info!("Snowflake: ending a session, the client that used it was closed");
+            self.connection = Connection::Failed("the client that used this Snowflake session was closed".to_string());
+        }
         loop {
             match &mut self.connection {
                 Connection::Up { .. } => return Poll::Ready(Ok(())),

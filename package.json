@@ -58,6 +58,8 @@
     "./site/tor-site-host.js": "./dist/site/tor-site-host.js",
     "./site/tor-site.js": "./dist/site/tor-site.js",
     "./tor_js_bg.wasm": "./dist/tor_js_bg.wasm",
+    "./pow-node-worker.js": "./dist/pow-node-worker.js",
+    "./pow-worker.js": "./dist/pow-worker.js",
     "./tor_js_host_bg.wasm": "./dist/tor_js_host_bg.wasm"
   },
   "imports": {

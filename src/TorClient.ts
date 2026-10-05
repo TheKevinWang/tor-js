@@ -6,7 +6,9 @@ import {
   setListenerLevel,
   wasmOnionAddressFor,
   hostingAvailable,
+  getWasmLocation,
 } from './wasm.js';
+import { installClientPow } from './pow/autoInstall.js';
 import { HostingUnavailableError } from './host/unavailable.js';
 import type { TorClientOptions, FetchInit, LogLevel, TorResponse } from './types.js';
 import { Log, levelEnabled } from './Log.js';
@@ -43,6 +45,8 @@ export class TorClient {
   private closed = false;
   private readyPromise: Promise<void> | null = null;
   private socketProvider: ArtiSocketProvider | null = null;
+  // Gives back the proof-of-work solver this client asked for (see TorClientOptions.pow).
+  private releasePow: (() => void) | null = null;
   // Onion services this client hosts; closed with it.
   private listeners = new Set<Listener>();
 
@@ -74,6 +78,8 @@ export class TorClient {
         ? new Log({ rawLog: toConsole })
         : new Log({ rawLog: () => {}, rawLogOnce: toConsole }));
     this.clientPromise = this.bootstrap(options);
+    // Pay proof of work when a service asks, unless told not to (nothing is started until a puzzle comes).
+    this.releasePow = installClientPow(options.pow, getWasmLocation);
     // Bootstrap starts immediately, so a failure has no awaiter until the first
     // fetch()/ready(). Attach a sink to keep that from surfacing as an unhandled
     // rejection (fatal in Node); the error still reaches every real awaiter.
@@ -281,6 +287,8 @@ export class TorClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.releasePow?.();
+    this.releasePow = null;
     for (const listener of [...this.listeners]) listener.close();
     this.removeLogListener?.();
     this.removeLogListener = null;

@@ -29,6 +29,7 @@ async function main() {
     copyWasmFiles,
     buildWorker,
     buildSite,
+    buildPowWorkers,
     verifyDeclarationMaps,
     verifyGzipSizes,
   ];
@@ -77,7 +78,7 @@ export async function buildAnonRpcWorker({ outfile, ensureWasm = false }) {
       external: [
         '@kpstreams/webrtc-client', '@kpstreams/quic-client', '@kpstreams/core',
         'node:net', 'node:stream', 'node:crypto',
-        'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url',
+        'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url', 'node:worker_threads',
       ],
       define: { __WASM_SHA256__: '""', __PACKAGE_VERSION__: JSON.stringify(version) },
       plugins: [{
@@ -137,7 +138,7 @@ export async function buildSiteBundles({ outDir }) {
       external: [
         '@kpstreams/webrtc-client', '@kpstreams/quic-client', '@kpstreams/core',
         'node:net', 'node:stream', 'node:crypto',
-        'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url',
+        'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url', 'node:worker_threads',
       ],
       define: {
         __WASM_SHA256__: '""',
@@ -155,6 +156,38 @@ export async function buildSiteBundles({ outDir }) {
     sizes[out] = readFileSync(outfile).length;
   }
   return sizes;
+}
+
+// The proof-of-work workers a plain TorClient starts when a service asks for effort (src/pow/autoInstall.ts): one
+// for Node (worker_threads) and one for a page (Web Worker). They need only the solver, which every build of
+// the WASM exports, and carry the glue of BOTH builds (default and host) because a WASM works only with its own
+// glue (src/pow/solveCore.ts).
+async function buildPowWorkers() {
+  const plugin = {
+    name: 'torjs-wasm-resolve',
+    setup(b) {
+      b.onResolve({ filter: /^#wasm$/ }, () => ({ path: resolve(pkgDir, 'tor_js.js') }));
+      b.onResolve({ filter: /^#wasm-host$/ }, () => ({ path: resolve(pkgHostDir, 'tor_js_host.js') }));
+    },
+  };
+  const node = resolve(distDir, 'pow-node-worker.js');
+  await esbuildBuild({
+    entryPoints: [resolve(__dirname, 'src/pow/powWorkerNode.ts')],
+    outfile: node,
+    bundle: true, format: 'esm', platform: 'node', target: 'es2022', logLevel: 'error',
+    external: ['node:*'],
+    plugins: [plugin],
+  });
+  const page = resolve(distDir, 'pow-worker.js');
+  await esbuildBuild({
+    entryPoints: [resolve(__dirname, 'src/pow/powWorkerAny.ts')],
+    outfile: page,
+    bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true, logLevel: 'error',
+    // The glue only reads import.meta.url when no WASM source is given; the worker always gives one.
+    define: { 'import.meta.url': 'self.location.href' },
+    plugins: [plugin],
+  });
+  console.log(`Built proof-of-work workers: dist/pow-node-worker.js ${(readFileSync(node).length / 1024).toFixed(0)} kB, dist/pow-worker.js ${(readFileSync(page).length / 1024).toFixed(0)} kB`);
 }
 
 function cleanDist() {

@@ -16,6 +16,7 @@
     "isolatedModules": true,
     "paths": {
       "#wasm": ["./crates/tor-js-wasm/pkg/tor_js.d.ts"],
+      "#wasm-host": ["./crates/tor-js-wasm/pkg-host/tor_js_host.d.ts"],
       "#wasm-base64-data": ["./src/wasm-base64-data.d.ts"]
     }
   },

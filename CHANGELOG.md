@@ -43,6 +43,14 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **Visiting clients pay for priority by default (`TorClientOptions.pow`).** A busy onion service serves the
+  visitors who did the most proof of work first, but a plain `TorClient` never paid unless the application
+  installed a solver. Now a client created in a page or in Node installs one that runs the work on worker
+  threads (Web Workers; `worker_threads` through the new `pow-node-worker.js`, exported as
+  `tor-js/pow-node-worker.js`), started only when a puzzle comes, and removed when the last client using it
+  closes. It never replaces a solver already installed; `pow: false` turns it off; `maxEffort`, `minEffort`,
+  `workers` and `workerUrl` tune it. Checked offline with real worker threads and live against a hosted
+  service (`test/visitor-pow-live.mjs`). Cost: about 3 kB gzip of JavaScript in every entry point.
 - **`TorClient.close()` lets a Node process exit.** Closing a client used to leave arti's background timers
   running, some for three minutes, so a script that closed its client did not end (every live script finished
   with `process.exit(0)`). Now `close()` unreferences the runtime's timers (`WasmRuntime::shutdown`; they still

@@ -15,4 +15,4 @@ setWasmSourceProvider(async () => {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
-});
+}, { variant: 'host' });
