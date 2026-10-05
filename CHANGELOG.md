@@ -43,6 +43,23 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **Hosting is a separate build: `tor-js/host`.** The onion service code is no longer in the default WASM, so
+  a page that only visits onion services does not pay for it: `tor-js`, `tor-js/wasm-file` and
+  `tor-js/wasm-base64` ship the same WASM as before hosting existed (5,472,447 bytes, 2.12 MB gzip), and
+  `tor-js/host`, `tor-js/host/wasm-file` and `tor-js/host/wasm-base64` ship `tor_js_host_bg.wasm`, built with the
+  new Cargo feature `onion-service-host` (6,370,381 bytes, 2.45 MB gzip; about 330 kB more). Calling `listen()` or
+  `serve()` on the default build throws `HostingUnavailableError`, which names the right import. The CDN loader
+  is shared (`src/cdnLoader.ts`); the host one uses only the npm mirrors (the GitHub artifact mirror is filled by
+  CI for the default binary only). `scripts/build.sh` and CI build and hash both WASM files; on Windows build
+  them with the two `wasm-pack` commands in `.agent/host-pow-and-optional-host-execplan.md`.
+- **Proof of work for hosted services.** A hosted onion service now publishes proof-of-work parameters,
+  verifies the solutions visitors send, serves the highest effort first, raises the effort it asks for when it
+  is busy, and reports what it did in `service.pow`. On by default; `proofOfWork: false` turns it off and
+  `proofOfWork: { queueDepth }` sizes the queue (default 256, not arti's 8192, which can take 32 MB). An idle
+  service asks for no effort, and visitors that cannot solve are still served. In the vendored `tor-hsservice`
+  the two request-handling loops, which arti runs on blocking threads, are async tasks that end when the
+  service does. Checked live: a visitor paying effort 4 or 6 was verified (by a Node host and by a browser
+  tab), a corrupted solution was rejected and not served (`test/hs-live-pow.mjs`).
 - **Host an onion service from a browser tab or a Node process: `client.serve()`, `client.listen()`.** A page
   can now be an onion service, not only visit one: `client.serve(handler)` answers HTTP requests with a
   `Response` and returns a `.onion` address any tor-js client or Tor Browser can visit; `client.listen()`
@@ -51,8 +68,8 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   visitors and request size/time protect the host. Everything but the identity is held in memory, so a
   restarted host picks new introduction points. Needs a vendored `tor-hsservice` with in-memory state
   (`crates/patches/tor-hsservice/PATCH.md`). Demo: `website/host.html`. Live checks:
-  `test/hs-live-node.mjs`, `test/hs-live-lifecycle.mjs`. The WASM grows 290 kB gzip (2.12 to 2.41 MB), so
-  `tor-js/wasm-base64` is about 3.1 MB and `tor-js/wasm-file` 2.3 MB plus 41 kB of JavaScript.
+  `test/hs-live-node.mjs`, `test/hs-live-lifecycle.mjs`. Hosting is in a separate build of the WASM (see the entries above), so the default entry points are
+  not larger.
 - **A browse-anything web proxy over Tor for static hosts (`web-proxy/`).** Host a folder of static files
   (GitHub Pages) and a visitor can open any URL or `.onion` address in it; the requests are made by the
   visitor's own browser through Tor, so the host never sees what is browsed. Ultraviolet (unmodified) rewrites

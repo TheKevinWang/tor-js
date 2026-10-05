@@ -47,10 +47,15 @@ The package offers three ways to load the WASM binary. All export the same API.
 | Import | WASM loading | Size (gzip) | Best for |
 |---|---|---|---|
 | `tor-js` | Fetched from CDN, cached locally | 42 kB | Production web apps |
-| `tor-js/wasm-base64` | Embedded in the JS bundle | 3.1 MB | Single-file deploys |
-| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 41 kB + 2.3 MB | Self-hosted, server-side |
+| `tor-js/wasm-base64` | Embedded in the JS bundle | 2.8 MB | Single-file deploys |
+| `tor-js/wasm-file` | Loaded from `tor_js_bg.wasm` next to the module | 40 kB + 2.0 MB | Self-hosted, server-side |
+| `tor-js/host` | Like `tor-js`, for the build that can host an onion service | 42 kB | Pages that host an onion service |
+| `tor-js/host/wasm-base64` | Like `tor-js/wasm-base64`, host build | 3.2 MB | Single-file deploys that host |
+| `tor-js/host/wasm-file` | Loaded from `tor_js_host_bg.wasm` next to the module | 41 kB + 2.4 MB | Self-hosted or server-side that host |
 
 Each also has a `/singleton` variant (see [Singleton](#singleton) below).
+
+The three `tor-js/host...` imports are the same API from a second WASM that can also **host** an onion service ([below](#hosting-an-onion-service)). It is about 330 kB (gzip) larger, so use `tor-js` unless you host: the default WASM carries none of the hosting code. The host imports have no `/singleton` variant.
 
 ## API
 
@@ -147,8 +152,10 @@ Close the client and release resources. Also available as `Symbol.dispose` for u
 
 A page or a Node process can be an onion service, not only visit one: a website at a `.onion` address with no server behind it. An onion service never accepts inbound connections (it dials out to Tor relays, so it works behind any firewall and inside a browser tab). Visitors do not learn the host's network address and the host does not learn theirs. This makes anonymous browser-to-browser communication possible: a private file drop, a chat, an API that lives in a tab.
 
+Hosting is a separate build of the WASM, so that pages that only visit onion services do not pay for it. Import from `tor-js/host` (or `tor-js/host/wasm-file`, `tor-js/host/wasm-base64`); calling `listen()` or `serve()` on the default `tor-js` build throws a `HostingUnavailableError` that says so.
+
 ```javascript
-import { TorClient } from 'tor-js';
+import { TorClient } from 'tor-js/host';
 
 const client = new TorClient({ snowflake: true });
 
@@ -168,14 +175,16 @@ service.close(); // take it offline
 
 **Identity.** The address comes from a secret 32-byte key. `TorClient.generateIdentity()` makes one, and `client.serve(handler, { identity })` hosts at the same address every time. Keep the bytes where your page keeps secrets (IndexedDB, a file); anyone who has them can host as you, and losing them retires the address. Without `identity`, a fresh one is made and returned as `service.identity`. `await TorClient.onionAddress(identity)` gives the address without going online.
 
-**Options** (both methods): `identity`, `ports` (default `[80]`; a visitor asking for another is refused), `maxConnections` (default 32; more are refused). `serve` also takes `maxHeadBytes` (16 KiB), `maxBodyBytes` (1 MiB), `headTimeoutMs` (30 s) and `bodyTimeoutMs` (60 s): the server is small and strict, answers one request per connection, and rejects ambiguous framing. In a browser, `request.headers` lacks the names browsers treat as forbidden (`Host`, `Cookie`, `Content-Length`, ...); the URL carries the host.
+**Options** (both methods): `identity`, `ports` (default `[80]`; a visitor asking for another is refused), `maxConnections` (default 32; more are refused), `proofOfWork` (below). `serve` also takes `maxHeadBytes` (16 KiB), `maxBodyBytes` (1 MiB), `headTimeoutMs` (30 s) and `bodyTimeoutMs` (60 s): the server is small and strict, answers one request per connection, and rejects ambiguous framing. In a browser, `request.headers` lacks the names browsers treat as forbidden (`Host`, `Cookie`, `Content-Length`, ...); the URL carries the host.
+
+**Proof of work** is a defence against floods. It is on by default; `proofOfWork: false` turns it off. The service publishes a puzzle in its descriptor. While it is idle it asks visitors for no effort and they send no solution. When requests arrive faster than it serves them, it raises the effort it asks for (re-evaluated every five minutes), verifies the solutions it receives, and serves the highest effort first. A visitor that pays nothing is served after those that did, and when the queue is full (`proofOfWork: { queueDepth }`, default 256) the lowest effort is dropped. A visitor that cannot solve still connects while the service is not busy. `service.pow` reports `{ enabled, verified, rejected, enqueued, dropped, queueLength, suggestedEffort, maxEffortSeen }`: read it again for fresh numbers; after `close()` it is the final reading. A visiting tor-js client pays when a solver is installed (see [Onion services that ask for proof of work](#onion-services-that-ask-for-proof-of-work)).
 
 **Limits you should know.**
 
 - A service is reachable only while it runs. Closing the tab takes it offline, and a background tab can be throttled by the browser. After `listen()` or `serve()` resolves it can take from a few seconds to a few minutes before visitors can reach it (measured: 9 to 48 seconds); a visitor should retry.
 - Everything except the identity is kept in memory: a restarted host picks new introduction points (the relays visitors meet it through), so a visitor holding an old copy of its published details may fail until it fetches the new one.
 - Do not host the same identity from two places at once; the last one to publish wins. (The demo page uses a Web Lock to stop two tabs of one browser.)
-- Service-side proof of work (an onion service's defence against floods) is not implemented, so the limits above are the only protection against a flood.
+- Verifying proof of work runs on the host's main thread (WebAssembly has one thread): each check takes some milliseconds, so a flood of bad solutions costs the page that much each. The queue and `maxConnections` limits bound what is held, but a determined flood can still slow the tab.
 - Like a client, a host's connection to the Tor network is visible to whoever carries it (the Snowflake proxy and bridge, or your gateway).
 
 Try it at `website/host.html` (`npm run website`): open it in two tabs, host in one, visit from the other. Internals and the arti patch that makes this possible are described in `crates/patches/tor-hsservice/PATCH.md`.
