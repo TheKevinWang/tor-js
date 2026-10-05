@@ -4,6 +4,7 @@ import {
   WasmTorClientOptions,
   addLogListener,
   setListenerLevel,
+  wasmOnionAddressFor,
 } from './wasm.js';
 import type { TorClientOptions, FetchInit, LogLevel, TorResponse } from './types.js';
 import { Log, levelEnabled } from './Log.js';
@@ -11,6 +12,9 @@ import { createAutoStorage } from './storage/index.js';
 import { abortable } from './abort.js';
 import { ArtiSocketProvider } from './socketProvider.js';
 import { SNOWFLAKE_BRIDGES, SNOWFLAKE_WEBRTC_BRIDGES } from './snowflake.js';
+import type { Handler, Listener, ListenOptions, ServeLimits } from './host/types.js';
+import { serve as serveHttp } from './host/http.js';
+import { wrapListener, type RawListener } from './host/wrap.js';
 
 function bridgeLines(options: TorClientOptions): string[] {
   const snowflake = options.snowflake === 'webrtc' ? SNOWFLAKE_WEBRTC_BRIDGES
@@ -37,6 +41,8 @@ export class TorClient {
   private closed = false;
   private readyPromise: Promise<void> | null = null;
   private socketProvider: ArtiSocketProvider | null = null;
+  // Onion services this client hosts; closed with it.
+  private listeners = new Set<Listener>();
 
   constructor(options: TorClientOptions = {}) {
     const hasGateway = Array.isArray(options.gateway)
@@ -159,6 +165,67 @@ export class TorClient {
   }
 
   /**
+   * Host an onion service and receive its visitors as raw byte streams.
+   *
+   * Resolves once the service is launched, with the address in `listener.onion`. The service is
+   * not yet reachable then: it still has to set up introduction points and publish itself, which
+   * takes from seconds to a few minutes. It stays up while this client and the page or process
+   * are running; closing the tab takes it offline.
+   *
+   * Pass `identity` (32 secret bytes, see `TorClient.generateIdentity()`) to host at the same
+   * address again; without it a fresh identity is made and returned as `listener.identity` so
+   * the caller can keep it. Anyone who has the identity can host as you.
+   *
+   * For HTTP use `serve()` instead.
+   */
+  async listen(options: ListenOptions = {}): Promise<Listener> {
+    if (this.closed) throw new Error('TorClient is closed');
+    const identity = options.identity ?? TorClient.generateIdentity();
+    const client = await this.clientPromise;
+    await this.ready();
+    if (this.closed) throw new Error('TorClient is closed');
+    this.log.info('Starting onion service');
+    const raw = (await client.listen({
+      identity,
+      ports: options.ports,
+      maxConnections: options.maxConnections,
+    })) as unknown as RawListener;
+    const listener = wrapListener(raw, identity, (l) => this.listeners.delete(l));
+    this.listeners.add(listener);
+    this.log.info(`Onion service started: ${listener.onion}`);
+    return listener;
+  }
+
+  /**
+   * Host an onion service that answers HTTP requests with `handler`, as a `fetch` handler
+   * does: it gets a standard `Request` and returns a `Response`.
+   *
+   * Visitors use `http://<listener.onion>/` (plain HTTP is fine: the connection to an onion
+   * service is already encrypted end to end), for example another tor-js client's `fetch`, or
+   * Tor Browser. Takes the same options as `listen()`, plus limits on request size and time
+   * (`ServeLimits`). `listener.done` resolves when the service has been closed.
+   */
+  async serve(handler: Handler, options: ListenOptions & ServeLimits = {}): Promise<Listener & { done: Promise<void> }> {
+    const { maxHeadBytes, maxBodyBytes, headTimeoutMs, bodyTimeoutMs, ...listenOptions } = options;
+    const listener = await this.listen(listenOptions);
+    const done = serveHttp(listener, handler, { maxHeadBytes, maxBodyBytes, headTimeoutMs, bodyTimeoutMs });
+    return Object.assign(listener, { done });
+  }
+
+  /** Make a new random onion service identity: 32 secret bytes. Keep them safe. */
+  static generateIdentity(): Uint8Array {
+    const identity = new Uint8Array(32);
+    globalThis.crypto.getRandomValues(identity);
+    return identity;
+  }
+
+  /** The `.onion` address an identity hosts at, without going online. */
+  static async onionAddress(identity: Uint8Array): Promise<string> {
+    await ensureWasmInitialized();
+    return wasmOnionAddressFor(identity);
+  }
+
+  /**
    * Wait for the Tor client to be ready for traffic
    * (guard connected, usable consensus, and sufficient microdescs).
    *
@@ -206,6 +273,7 @@ export class TorClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const listener of [...this.listeners]) listener.close();
     this.removeLogListener?.();
     this.removeLogListener = null;
     this.wasmCallback = null;

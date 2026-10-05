@@ -5,9 +5,10 @@ import initWasm, {
   setLogLevel as wasmSetLogLevel,
   TorClient as WasmTorClient,
   TorClientOptions as WasmTorClientOptions,
+  onionAddressFor as wasmOnionAddressFor,
 } from '#wasm';
 
-export { WasmTorClient, WasmTorClientOptions };
+export { WasmTorClient, WasmTorClientOptions, wasmOnionAddressFor };
 
 // ============================================================================
 // Log listener management
