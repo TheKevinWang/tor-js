@@ -111,6 +111,7 @@ pub use keys::{
     HsIdKeypairSpecifier, HsIdPublicKeySpecifier,
 };
 use pow::{NewPowManager, PowManager};
+pub use pow::{PowStats, PowStatsSnapshot};
 pub use publish::UploadError as DescUploadError;
 pub use req::{RendRequest, StreamRequest};
 pub use tor_hscrypto::pk::HsId;
@@ -148,6 +149,8 @@ pub struct RunningOnionService {
     nickname: HsNickname,
     /// The key manager, used for accessing the underlying key stores.
     keymgr: Arc<KeyMgr>,
+    /// Counters of the proof-of-work subsystem (tor-js patch).
+    pow_stats: Arc<PowStats>,
 }
 
 /// Implementation details for an onion service.
@@ -383,9 +386,11 @@ impl OnionService {
             publisher_update_rx,
         );
 
+        let pow_stats = pow_manager.stats();
         let svc = Arc::new(RunningOnionService {
             nickname,
             keymgr,
+            pow_stats,
             inner: Mutex::new(SvcInner {
                 config_tx,
                 _shutdown_tx: shutdown_tx,
@@ -478,6 +483,14 @@ impl OnionServiceBuilder {
 }
 
 impl RunningOnionService {
+    /// What the proof-of-work subsystem has done so far (tor-js patch).
+    ///
+    /// With proof of work off, or in a build without the `hs-pow-full` feature, `enabled` is
+    /// false and the counters are zero.
+    pub fn pow_stats(&self) -> PowStatsSnapshot {
+        self.pow_stats.snapshot()
+    }
+
     /// Change the configuration of this onion service.
     ///
     /// (Not everything can be changed here. At the very least we'll need to say

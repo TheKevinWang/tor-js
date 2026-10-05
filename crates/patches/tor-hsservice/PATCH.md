@@ -35,6 +35,24 @@ so a service can run in WebAssembly (`crates/tor-js-wasm/src/host.rs`).
 5. `src/ipt_mgr.rs`: the deletion of replay-log files of introduction points that no longer exist
    is a no-op, since there are no files.
 
+6. `src/pow/v1.rs` (proof of work for hosts, with the `hs-pow-full` feature): upstream runs the two
+   request-handling loops, `accept_loop` and `expire_old_requests_loop`, on blocking operating-system
+   threads (`spawn_blocking`) and blocks them on futures (`reenter_block_on`). A WebAssembly build has one
+   thread and cannot block, so they are `async fn`s started with `spawn` (`start_tasks`, replacing
+   `start_accept_thread`); `check_solve` stays synchronous (one Equi-X verification, milliseconds with the
+   interpreter). Upstream's loops and the seed-rotation task never end; here a `closed` flag, set when the
+   inbound channel ends (the service was dropped), ends all three, so no timer is left running for a
+   service that is gone. The percent change of the suggested effort is computed on signed values
+   (upstream subtracts two `u32`s, which wraps when the effort went down).
+7. `src/pow.rs`, `src/pow/v1.rs`, `src/pow/v1_stub.rs`, `src/lib.rs`: `PowStats` and `PowStatsSnapshot`
+   (verified, rejected, enqueued, dropped, queue length, suggested effort, largest effort seen), counted
+   by the loops, held by `PowManager::stats()` and read through the new
+   `RunningOnionService::pow_stats()`. The stub reports zeros with `enabled: false`.
+8. `src/pow/v1.rs` tests: the helper starts `start_tasks`; four tests added (counters, overflow and expiry
+   counted as dropped, tasks end on shutdown, zero stats). The five upstream queue tests plus these run in a
+   scratch crate that restores arti's dev-dependencies and switches off every other test module (see
+   `.agent/host-pow-and-optional-host-execplan.md`, Concrete Steps): 9 pass.
+
 Consequences for a service: a restarted host picks fresh introduction points, and the replay
 logs last only as long as the running service. The service's identity key is not part of this
 state (it lives in the `KeyMgr`, see `host.rs`). `restricted_discovery` still has a file-based key
@@ -43,4 +61,5 @@ provider; it is unused by tor-js (restricted discovery is off) and still compile
 It is used through `[patch."https://github.com/voltrevo/arti"]` in the workspace `Cargo.toml`.
 When the pinned arti revision changes, repeat the copy from the new revision and re-apply the
 changes (`scripts/` has no tool for it; the changes are small). Checked: compiles for
-`wasm32-unknown-unknown` and natively, with and without `hs-pow-full`.
+`wasm32-unknown-unknown` and natively, with and without `hs-pow-full`; the proof-of-work queue tests pass
+in the scratch crate.

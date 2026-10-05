@@ -14,7 +14,7 @@ use tor_rtcompat::Runtime;
 
 use crate::{OnionServiceConfig, RendRequest, StartupError, status::StatusSender};
 
-use super::NewPowManager;
+use super::{NewPowManager, PowStats};
 
 #[derive(Clone)]
 /// Stub for PoW management code, does nothing.
@@ -23,6 +23,8 @@ pub(crate) struct PowManager<R> {
     publisher_update_tx: mpsc::Sender<TimePeriod>,
     /// PhantomData since our stub doesn't actually care about what runtime we use.
     runtime: PhantomData<R>,
+    /// Counters, always zero here (tor-js patch).
+    stats: Arc<PowStats>,
 }
 
 /// Stub persistent state for the PoW manager (empty when PoW is disabled).
@@ -51,11 +53,17 @@ impl<R: Runtime> PowManager<R> {
             pow_manager: Arc::new(PowManager {
                 publisher_update_tx,
                 runtime: PhantomData,
+                stats: Arc::new(PowStats::new(false)),
             }),
             rend_req_tx,
             rend_req_rx: Box::pin(rend_req_rx),
             publisher_update_rx,
         })
+    }
+
+    /// The counters of this (stub) manager: all zero.
+    pub(crate) fn stats(&self) -> Arc<PowStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Launch the (stub) PoW manager. Does nothing.
