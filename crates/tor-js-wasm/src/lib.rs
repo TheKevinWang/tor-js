@@ -38,6 +38,8 @@ mod fast_bootstrap;
 mod fetch;
 mod pow;
 mod bridges;
+mod host;
+mod identity;
 mod conn_pool;
 mod runtime;
 mod snapshot_policy;

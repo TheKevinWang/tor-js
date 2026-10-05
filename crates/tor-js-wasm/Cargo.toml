@@ -51,6 +51,15 @@ tor-netdoc = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd8
 tor-checkable = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
 tor-async-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
 # Used by the WASM runtime (src/runtime.rs), moved here from tor-rtcompat::wasm.
+# Hosting an onion service (src/host.rs). tor-hsservice resolves to crates/patches/tor-hsservice through
+# the workspace [patch]: the same service code, with its state in memory instead of a directory on disk.
+tor-hsservice = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+# The service's keys live in an in-memory keystore; the page keeps the identity seed itself (src/identity.rs).
+tor-keymgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["keymgr", "ephemeral-keystore"] }
+tor-proto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+tor-cell = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+tor-config-path = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+safelog = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
 tor-general-addr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
 web-time-compat = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112" }
 digest = "0.10"
