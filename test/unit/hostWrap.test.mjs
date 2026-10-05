@@ -25,9 +25,15 @@ function rawConn(chunks = []) {
 
 function rawListener(conns = []) {
   const log = []
+  let verified = 0
   return {
     log,
     onion: 'abc.onion',
+    bump() { verified++ },
+    powStats() {
+      log.push('powStats')
+      return { enabled: true, verified, rejected: 0, enqueued: verified, dropped: 0, queueLength: 0, suggestedEffort: 0, maxEffortSeen: 0 }
+    },
     async accept() { log.push('accept'); return conns.length ? conns.shift() : null },
     close() { log.push('close') },
     free() { log.push('free') },
@@ -101,7 +107,7 @@ describe('listener', () => {
     const l = m.wrapListener(raw, new Uint8Array(32), (x) => closed.push(x))
     l.close()
     l.close()
-    assert.deepEqual(raw.log, ['close', 'free'])
+    assert.deepEqual(raw.log, ['powStats', 'close', 'free'])
     assert.deepEqual(closed, [l])
   })
 
@@ -111,6 +117,27 @@ describe('listener', () => {
     l.close()
     raw.log.length = 0
     assert.equal(await l.accept(), null)
+    assert.deepEqual(raw.log, [])
+  })
+
+  test('pow reads fresh counters from the service each time it is read', () => {
+    const raw = rawListener()
+    const l = m.wrapListener(raw, new Uint8Array(32))
+    assert.equal(l.pow.verified, 0)
+    raw.bump()
+    raw.bump()
+    assert.equal(l.pow.verified, 2)
+    assert.equal(l.pow.enabled, true)
+  })
+
+  test('pow after close is the reading taken at close, and does not touch the freed object', () => {
+    const raw = rawListener()
+    const l = m.wrapListener(raw, new Uint8Array(32))
+    raw.bump()
+    l.close()
+    raw.bump() // too late: the service is gone
+    raw.log.length = 0
+    assert.equal(l.pow.verified, 1)
     assert.deepEqual(raw.log, [])
   })
 })

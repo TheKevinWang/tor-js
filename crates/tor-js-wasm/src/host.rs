@@ -11,6 +11,9 @@
 //!   an in-memory keystore for the life of the service.
 //! - Everything else the service remembers is in memory too (the vendored `tor-hsservice`,
 //!   `crates/patches/tor-hsservice/PATCH.md`), so a restarted host picks new introduction points.
+//! - Proof of work (on by default): the service publishes a seed and a suggested effort, verifies the
+//!   solutions visitors send, serves higher effort first, and raises the effort it asks for when it is
+//!   busy. `OnionListener.powStats()` reports what it has done.
 //! - Visitors arrive as `OnionConnection`s: a duplex byte stream. HTTP on top of it is written in
 //!   TypeScript (`src/host/http.ts`).
 
@@ -29,8 +32,8 @@ use tor_config_path::CfgPathResolver;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_hsservice::mem_state::StateDirectory;
 use tor_hsservice::{
-    HsIdKeypairSpecifier, HsNickname, OnionService, RunningOnionService, StreamRequest,
-    handle_rend_requests,
+    HsIdKeypairSpecifier, HsNickname, OnionService, PowStatsSnapshot, RunningOnionService,
+    StreamRequest, handle_rend_requests,
 };
 use tor_hscrypto::pk::HsIdKeypair;
 use tor_keymgr::{ArtiEphemeralKeystore, KeyMgrBuilder, KeystoreSelector};
@@ -53,6 +56,11 @@ const DEFAULT_MAX_CONNECTIONS: usize = 32;
 
 /// The port visitors connect to when the caller does not say (the one `http://` uses).
 const DEFAULT_PORT: u16 = 80;
+
+/// How many introduction requests may wait in the proof-of-work priority queue when the caller does
+/// not say. arti's own default (8192) can take about 32 MB, too much for a browser tab; when the queue
+/// is full the lowest-effort request is dropped.
+const DEFAULT_POW_QUEUE_DEPTH: usize = 256;
 
 /// How many bytes one `read()` returns at most.
 const READ_CHUNK: usize = 16 * 1024;
@@ -78,9 +86,11 @@ struct ListenOptions {
     ports: Vec<u16>,
     /// The most visitors held open at once; more are turned away.
     max_connections: usize,
+    /// Proof of work: `Some(queue depth)` when on, `None` when off.
+    pow_queue_depth: Option<usize>,
 }
 
-/// Read `{ identity: Uint8Array, ports?: number[], maxConnections?: number }`.
+/// Read `{ identity: Uint8Array, ports?: number[], maxConnections?: number, proofOfWork?: boolean | { queueDepth?: number } }`.
 fn parse_options(options: &JsValue) -> Result<ListenOptions, JsValue> {
     let get = |name: &str| js_sys::Reflect::get(options, &JsValue::from_str(name)).unwrap_or(JsValue::UNDEFINED);
 
@@ -118,7 +128,27 @@ fn parse_options(options: &JsValue) -> Result<ListenOptions, JsValue> {
         }
     };
 
-    Ok(ListenOptions { seed, ports, max_connections })
+    // `proofOfWork`: true (the default), false, or { queueDepth }.
+    let pow = get("proofOfWork");
+    let pow_queue_depth = if pow.is_undefined() || pow.is_null() || pow.as_bool() == Some(true) {
+        Some(DEFAULT_POW_QUEUE_DEPTH)
+    } else if pow.as_bool() == Some(false) {
+        None
+    } else if pow.is_object() {
+        let depth = js_sys::Reflect::get(&pow, &JsValue::from_str("queueDepth")).unwrap_or(JsValue::UNDEFINED);
+        if depth.is_undefined() || depth.is_null() {
+            Some(DEFAULT_POW_QUEUE_DEPTH)
+        } else {
+            match depth.as_f64() {
+                Some(n) if n >= 1.0 && n.fract() == 0.0 => Some(n as usize),
+                _ => return Err(host_err("BAD_LIMIT", "proofOfWork.queueDepth must be a positive integer")),
+            }
+        }
+    } else {
+        return Err(host_err("BAD_LIMIT", "proofOfWork must be true, false or { queueDepth }"));
+    };
+
+    Ok(ListenOptions { seed, ports, max_connections, pow_queue_depth })
 }
 
 #[wasm_bindgen]
@@ -170,8 +200,13 @@ fn launch(client: Arc<ArtiTorClient<WasmRuntime>>, opts: ListenOptions) -> Resul
         )
         .map_err(|e| host_err("HOST", format!("keystore: {e}")))?;
 
-    let config = OnionServiceConfigBuilder::default()
-        .nickname(nickname)
+    let mut config = OnionServiceConfigBuilder::default();
+    config.nickname(nickname);
+    if let Some(depth) = opts.pow_queue_depth {
+        // The native HashX compiler does not exist in WebAssembly: verify with the interpreter.
+        config.enable_pow(true).pow_rend_queue_depth(depth).disable_pow_compilation(true);
+    }
+    let config = config
         .build()
         .map_err(|e| host_err("HOST", format!("service config: {e}")))?;
     let service = OnionService::builder()
@@ -225,6 +260,7 @@ fn launch(client: Arc<ArtiTorClient<WasmRuntime>>, opts: ListenOptions) -> Resul
 
     Ok(OnionListener {
         onion,
+        last_pow: RefCell::new(PowStatsSnapshot::default()),
         running: RefCell::new(Some(running)),
         abort,
         closed,
@@ -299,6 +335,8 @@ impl Drop for OpenSlot {
 #[wasm_bindgen]
 pub struct OnionListener {
     onion: String,
+    /// The counters as they were when the listener was closed.
+    last_pow: RefCell<PowStatsSnapshot>,
     /// Dropping this stops publishing and accepting new introductions.
     running: RefCell<Option<Arc<RunningOnionService>>>,
     /// Stops the accept loop.
@@ -327,12 +365,38 @@ impl OnionListener {
         })
     }
 
+    /// What proof of work has done so far: `{ enabled, verified, rejected, enqueued, dropped,
+    /// queueLength, suggestedEffort, maxEffortSeen }`. After `close()`, the final reading.
+    #[wasm_bindgen(js_name = powStats)]
+    pub fn pow_stats(&self) -> JsValue {
+        let snapshot = match self.running.borrow().as_ref() {
+            Some(running) => running.pow_stats(),
+            None => self.last_pow.borrow().clone(),
+        };
+        let out = js_sys::Object::new();
+        let set = |name: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(&out, &JsValue::from_str(name), &value);
+        };
+        set("enabled", JsValue::from_bool(snapshot.enabled));
+        set("verified", JsValue::from_f64(snapshot.verified as f64));
+        set("rejected", JsValue::from_f64(snapshot.rejected as f64));
+        set("enqueued", JsValue::from_f64(snapshot.enqueued as f64));
+        set("dropped", JsValue::from_f64(snapshot.dropped as f64));
+        set("queueLength", JsValue::from_f64(snapshot.queue_len as f64));
+        set("suggestedEffort", JsValue::from_f64(f64::from(snapshot.suggested_effort)));
+        set("maxEffortSeen", JsValue::from_f64(f64::from(snapshot.max_effort_seen)));
+        out.into()
+    }
+
     /// Take the service offline. Connections already open stay open until their ends close them.
     pub fn close(&self) {
         if self.closed.replace(true) {
             return;
         }
         info!("Closing onion service {}", self.onion);
+        if let Some(running) = self.running.borrow().as_ref() {
+            *self.last_pow.borrow_mut() = running.pow_stats();
+        }
         self.abort.abort();
         drop(self.running.borrow_mut().take());
     }

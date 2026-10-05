@@ -53,7 +53,7 @@ tor-async-utils = { git = "https://github.com/voltrevo/arti", rev = "cc09d691560
 # Used by the WASM runtime (src/runtime.rs), moved here from tor-rtcompat::wasm.
 # Hosting an onion service (src/host.rs). tor-hsservice resolves to crates/patches/tor-hsservice through
 # the workspace [patch]: the same service code, with its state in memory instead of a directory on disk.
-tor-hsservice = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }
+tor-hsservice = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["hs-pow-full"] }
 # The service's keys live in an in-memory keystore; the page keeps the identity seed itself (src/identity.rs).
 tor-keymgr = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false, features = ["keymgr", "ephemeral-keystore"] }
 tor-proto = { git = "https://github.com/voltrevo/arti", rev = "cc09d69156011fd80cafa6cb57fb682062f4d112", default-features = false }

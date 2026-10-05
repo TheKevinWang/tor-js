@@ -189,6 +189,7 @@ export class TorClient {
       identity,
       ports: options.ports,
       maxConnections: options.maxConnections,
+      proofOfWork: options.proofOfWork,
     })) as unknown as RawListener;
     const listener = wrapListener(raw, identity, (l) => this.listeners.delete(l));
     this.listeners.add(listener);

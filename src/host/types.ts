@@ -12,6 +12,33 @@ export interface ListenOptions {
   ports?: number[];
   /** The most visitors held open at once (default 32). More are refused. */
   maxConnections?: number;
+  /**
+   * Proof of work, a defence against floods (default on). The service publishes a puzzle; when it
+   * is busy it asks visitors for effort and serves the highest effort first, and a visitor that
+   * pays nothing still connects while the service is idle. `{ queueDepth }` sets how many waiting
+   * requests are kept (default 256); when full, the lowest effort is dropped. `false` turns it off.
+   */
+  proofOfWork?: boolean | { queueDepth?: number };
+}
+
+/** What a service's proof of work has done so far (see {@link Listener.pow}). */
+export interface PowStats {
+  /** Whether proof of work is on for this service. */
+  enabled: boolean;
+  /** Solutions that checked out. */
+  verified: number;
+  /** Solutions refused: unknown or expired seed, a replayed nonce, a malformed or wrong solution. */
+  rejected: number;
+  /** Requests put on the priority queue. */
+  enqueued: number;
+  /** Requests removed from the queue unserved: queue full, or too old. */
+  dropped: number;
+  /** Requests waiting on the queue now. */
+  queueLength: number;
+  /** The effort the service currently asks visitors for (0 when it is not busy). */
+  suggestedEffort: number;
+  /** The largest effort seen in a verified solution. */
+  maxEffortSeen: number;
 }
 
 /** One visitor: a duplex byte stream, end-to-end encrypted with them. */
@@ -34,6 +61,8 @@ export interface Listener extends AsyncIterable<Connection> {
   readonly onion: string;
   /** The identity this service was started with (see {@link ListenOptions.identity}). */
   readonly identity: Uint8Array;
+  /** What proof of work has done so far; read it again for fresh numbers. After `close()`, the final reading. */
+  readonly pow: PowStats;
   /** The next visitor, or `null` once the listener is closed. */
   accept(): Promise<Connection | null>;
   /** Take the service offline. Connections already open stay open until their ends close. */
