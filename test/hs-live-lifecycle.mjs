@@ -10,9 +10,8 @@
 //   4. while one visitor is held open, a second is refused, and is served once the first is done;
 //   5. closing the listener and both clients leaves no handle running that hosting added.
 //
-// Not checked: that Node exits by itself. It does not, even for a TorClient that never hosted
-// anything (measured: it stays alive 45 s+ after close()), which is why the live scripts end in
-// process.exit(0). That is existing behaviour, recorded in the ExecPlan, not part of hosting.
+// This script ends with process.exit(0) out of habit; that a closed client lets Node exit by itself is
+// checked on its own in test/close-exits-live.mjs (.agent/close-releases-everything-execplan.md).
 
 import { TorClient, storage } from '../dist/entryPoints/host-file/index.js'
 

@@ -41,8 +41,11 @@ use std::io::{self, Result as IoResult};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 use std::time::Duration;
 use web_time_compat::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -67,6 +70,47 @@ pub struct WasmRuntime {
     /// Bridge addresses whose connections go through a pluggable transport
     /// instead of `connect_fn` (see `bridges.rs`).
     pt_routes: Arc<HashMap<SocketAddr, PtRoute>>,
+    /// Shared by every clone: lets [`WasmRuntime::shutdown`] stop all the tasks spawned through it.
+    shutdown: Arc<Shutdown>,
+}
+
+/// What `close()` needs to stop a runtime's timers keeping Node alive: see [`WasmRuntime::shutdown`].
+///
+/// Without it, closing a client only drops the handle its owner holds; arti's background tasks keep
+/// their own references and keep sleeping on timers of up to three minutes, and in Node a timer keeps the
+/// process running until it fires. (The tasks cannot be cancelled from here: on wasm32 arti's
+/// `SpawnExt::spawn` calls `spawn_local` itself and never reaches `Spawn::spawn_obj`. Freezing their
+/// sleeps does not work either: arti's own teardown needs timeouts to fire.)
+#[derive(Default)]
+struct Shutdown {
+    /// Set by [`WasmRuntime::shutdown`]; once set, every timer this runtime makes is unreferenced.
+    closed: AtomicBool,
+    /// The host timer handle of each sleep in progress, so `shutdown` can unreference them. A sleep
+    /// removes its entry when it ends, so this holds one entry per sleep in progress. (`JsValue` is not
+    /// `Send`; WebAssembly here has one thread, which `SendWrapper` checks.)
+    timers: Mutex<HashMap<u64, send_wrapper::SendWrapper<JsValue>>>,
+    /// Source of sleep ids.
+    next_id: AtomicU64,
+}
+
+#[wasm_bindgen]
+extern "C" {
+    /// The host's `setTimeout`. (The handle is a number in a browser and an object in Node.)
+    #[wasm_bindgen(js_name = "setTimeout", catch)]
+    fn js_set_timeout(handler: &js_sys::Function, timeout: i32) -> Result<JsValue, JsValue>;
+    /// The host's `clearTimeout`.
+    #[wasm_bindgen(js_name = "clearTimeout")]
+    fn js_clear_timeout(handle: &JsValue);
+}
+
+/// Stop a host timer from keeping the process alive, if the host has a way to say so: Node's timer
+/// handles have `unref()`; a browser's are numbers, and a browser tab is not kept alive by timers.
+fn unref_timer(handle: &JsValue) {
+    if let Ok(unref) = js_sys::Reflect::get(handle, &JsValue::from_str("unref")) {
+        if let Some(unref) = unref.dyn_ref::<js_sys::Function>() {
+            let _ = unref.call0(handle);
+        }
+    }
 }
 
 /// How to open a connection to a pluggable-transport bridge.
@@ -107,6 +151,17 @@ impl WasmRuntime {
             coarse: RealCoarseTimeProvider::new(),
             connect_fn: None,
             pt_routes: Arc::new(HashMap::new()),
+            shutdown: Arc::new(Shutdown::default()),
+        }
+    }
+
+    /// Stop this runtime's timers (and its clones') keeping a Node process alive: every sleep in progress
+    /// is unreferenced, and so is every sleep made afterwards. They still fire, so arti can finish tearing
+    /// itself down, but none holds the event loop open. Called by `TorClient.close()`.
+    pub(crate) fn shutdown(&self) {
+        self.shutdown.closed.store(true, Ordering::SeqCst);
+        for handle in self.shutdown.timers.lock().expect("poisoned").values() {
+            unref_timer(handle);
         }
     }
 
@@ -132,18 +187,46 @@ impl WasmRuntime {
 // SleepProvider implementation
 // ============================================================================
 
-/// A sleep future for WASM using gloo-timers.
+/// A sleep future for WASM: a host `setTimeout` that is cleared when the future is dropped, and
+/// unreferenced once its runtime is shut down (so it cannot keep a Node process alive).
 pub struct WasmSleepFuture {
-    /// The underlying timeout future from gloo-timers
-    inner: send_wrapper::SendWrapper<gloo_timers::future::TimeoutFuture>,
+    /// The host timer's handle; `None` if it could not be set.
+    handle: Option<send_wrapper::SendWrapper<JsValue>>,
+    /// Keeps the callback alive for as long as the timer can fire.
+    _callback: send_wrapper::SendWrapper<Closure<dyn FnMut()>>,
+    /// Completes (or is cancelled) when the timer fires.
+    fired: futures::channel::oneshot::Receiver<()>,
+    id: u64,
+    shutdown: Arc<Shutdown>,
 }
 
 impl WasmSleepFuture {
     /// Create a new sleep future.
-    fn new(duration: Duration) -> Self {
-        let millis = duration.as_millis().min(u128::from(u32::MAX)) as u32;
+    fn new(duration: Duration, shutdown: Arc<Shutdown>) -> Self {
+        // setTimeout takes an i32: larger values fire at once in Node.
+        let millis = duration.as_millis().min(i32::MAX as u128) as i32;
+        let (tx, fired) = futures::channel::oneshot::channel();
+        let callback = Closure::once(move || {
+            let _ = tx.send(());
+        });
+        let handle = js_set_timeout(callback.as_ref().unchecked_ref(), millis).ok();
+        let id = shutdown.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Some(handle) = &handle {
+            if shutdown.closed.load(Ordering::SeqCst) {
+                unref_timer(handle);
+            }
+            shutdown
+                .timers
+                .lock()
+                .expect("poisoned")
+                .insert(id, send_wrapper::SendWrapper::new(handle.clone()));
+        }
         Self {
-            inner: send_wrapper::SendWrapper::new(gloo_timers::future::TimeoutFuture::new(millis)),
+            handle: handle.map(send_wrapper::SendWrapper::new),
+            _callback: send_wrapper::SendWrapper::new(callback),
+            fired,
+            id,
+            shutdown,
         }
     }
 }
@@ -151,21 +234,32 @@ impl WasmSleepFuture {
 impl Future for WasmSleepFuture {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: We never move the inner future after pinning.
-        // Deref through SendWrapper to get the TimeoutFuture.
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut *s.inner) };
-        inner.poll(cx)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.handle.is_none() {
+            // The host would not make a timer: do not hold the task up for ever.
+            return Poll::Ready(());
+        }
+        // The sender is dropped without sending only if the callback is dropped, which is not before us.
+        Pin::new(&mut self.fired).poll(cx).map(|_| ())
     }
 }
 
-// WasmSleepFuture is Send because the inner future is wrapped in SendWrapper.
+impl Drop for WasmSleepFuture {
+    fn drop(&mut self) {
+        self.shutdown.timers.lock().expect("poisoned").remove(&self.id);
+        if let Some(handle) = &self.handle {
+            js_clear_timeout(handle);
+        }
+    }
+}
+
+// WasmSleepFuture is Send because everything JavaScript in it is wrapped in SendWrapper.
 
 impl SleepProvider for WasmRuntime {
     type SleepFuture = WasmSleepFuture;
 
     fn sleep(&self, duration: Duration) -> Self::SleepFuture {
-        WasmSleepFuture::new(duration)
+        WasmSleepFuture::new(duration, Arc::clone(&self.shutdown))
     }
 
     fn now(&self) -> Instant {

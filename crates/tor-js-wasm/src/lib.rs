@@ -360,6 +360,8 @@ impl TorClientOptions {
 #[wasm_bindgen]
 pub struct TorClient {
     inner: Option<Arc<ArtiTorClient<WasmRuntime>>>,
+    /// Keeps this client's Snowflake sessions alive; released by `close()` (see `snowflake::Lease`).
+    snowflake_lease: Option<snowflake::Lease>,
     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
     /// Connections kept open for this client's next requests. Per client, not per
     /// process: another client may have different settings, and must never be
@@ -442,8 +444,14 @@ impl TorClient {
     /// Close the TorClient and release resources
     #[wasm_bindgen(js_name = close)]
     pub fn close(&mut self) -> js_sys::Promise {
-        self.inner = None;
+        // Stop everything arti spawned: dropping our handle alone leaves its background tasks (and the
+        // timers they sleep on, which keep a Node process alive) running.
+        if let Some(client) = self.inner.take() {
+            client.runtime().shutdown();
+        }
         self.idle.borrow_mut().clear();
+        // Let go of this client's Snowflake sessions, including spares parked for it.
+        self.snowflake_lease = None;
         wasm_bindgen_futures::future_to_promise(async {
             info!("TorClient closed");
             Ok(JsValue::undefined())
@@ -520,6 +528,9 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
     // one after the other made the start-up their sum. The result is awaited
     // below, before arti dials: its channel timeout (5s, handshake included) is
     // shorter than a WebRTC broker match.
+    // Held until the client is closed (or this function fails): the pool of Snowflake sessions is global,
+    // and releases the sessions it parked once no lease is left.
+    let snowflake_lease = (!snowflakes.is_empty()).then(snowflake::Lease::new);
     let session_warmup = if snowflakes.is_empty() {
         None
     } else {
@@ -607,6 +618,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
 
     Ok(TorClient {
         inner: Some(tor_client),
+        snowflake_lease,
         tls_config: make_tls_config(),
         idle: Rc::new(RefCell::new(conn_pool::IdlePool::new(POOL_MAX_PER_HOST, POOL_MAX_TOTAL))),
     })

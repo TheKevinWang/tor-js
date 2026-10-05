@@ -43,6 +43,14 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **`TorClient.close()` lets a Node process exit.** Closing a client used to leave arti's background timers
+  running, some for three minutes, so a script that closed its client did not end (every live script finished
+  with `process.exit(0)`). Now `close()` unreferences the runtime's timers (`WasmRuntime::shutdown`; they still
+  fire, so arti can finish tearing itself down, but none holds the event loop open), the pool of spare Snowflake
+  sessions is released when the last client using it closes (`snowflake::Lease`), and a hosted service's
+  proof-of-work tasks end with the service instead of after a five minute sleep. A client with nothing in flight
+  exits within a second of `close()`; work arti already has in flight (a descriptor upload, a bootstrap) runs
+  out first, which its own timeouts bound at about a minute. `test/close-exits-live.mjs` checks all three cases.
 - **Hosting is a separate build: `tor-js/host`.** The onion service code is no longer in the default WASM, so
   a page that only visits onion services does not pay for it: `tor-js`, `tor-js/wasm-file` and
   `tor-js/wasm-base64` ship the same WASM as before hosting existed (5,472,447 bytes, 2.12 MB gzip), and

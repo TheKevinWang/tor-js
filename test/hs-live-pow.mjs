@@ -29,6 +29,12 @@ const { TorClient, storage } = await import(pathToFileURL(fileURLToPath(new URL(
 
 await initSolver({ module_or_path: readFileSync(new URL('../dist/tor_js_bg.wasm', import.meta.url)) })
 
+// An unhandled rejection is a failure, and its stack is the evidence: print it before dying.
+process.on('unhandledRejection', (e) => {
+  console.error('FAIL: unhandled rejection:', e?.stack ?? e, e?.cause ? '\ncause: ' + (e.cause?.stack ?? e.cause) : '')
+  process.exit(1)
+})
+
 const t0 = performance.now()
 const say = (msg) => console.log(`[${((performance.now() - t0) / 1000).toFixed(1)}s] ${msg}`)
 const fail = (msg) => { console.error(`FAIL: ${msg}`); process.exit(1) }
@@ -87,12 +93,25 @@ visitor1.close()
 // 2. cheating
 installSolver(cheating, { minEffort: 4, maxEffort: 64 })
 const visitor2 = newClient()
-const cheated = await visit(visitor2, '/two', { timeout: 75_000 }).then((r) => `served ${r.status}`, (e) => `not served (${String(e?.message ?? e).slice(0, 70)})`)
-await new Promise((r) => setTimeout(r, 3000))
+// The visitor must get as far as solving for this check to mean anything: on a slow network a fetch can
+// time out before it reaches the service's introduction point, so try again (up to six minutes) until the
+// cheating solver has actually been called.
+let cheated = 'not tried'
+const cheatDeadline = Date.now() + 6 * 60_000
+while (solved.length === 0 && Date.now() < cheatDeadline) {
+  cheated = await visit(visitor2, '/two', { timeout: 75_000 }).then((r) => `served ${r.status}`, (e) => `not served (${String(e?.message ?? e).slice(0, 70)})`)
+  if (cheated.startsWith('served')) break
+}
+if (cheated.startsWith('served')) fail('a visitor with a corrupted solution was served')
+if (solved.length === 0) {
+  console.log(`INCONCLUSIVE: in six minutes the visiting client never reached the step where it solves (the network was too slow to reach the service's introduction point); nothing was learned about rejection. Service: ${JSON.stringify(service.pow)}`)
+  process.exit(3)
+}
+// The introduction request travels on to the service; give its verdict a moment to be counted.
+for (let i = 0; i < 10 && service.pow.rejected < 1; i++) await new Promise((r) => setTimeout(r, 3000))
 const afterCheat = service.pow
 say(`2. cheating visitor: ${cheated}; it tried effort ${JSON.stringify(solved)}; service: ${JSON.stringify(afterCheat)}`)
-if (cheated.startsWith('served')) fail('a visitor with a corrupted solution was served')
-if (afterCheat.rejected < 1) fail('the service did not count the corrupted solution as rejected')
+if (afterCheat.rejected < 1) fail('the visitor sent a corrupted solution but the service did not count it as rejected')
 if (afterCheat.verified !== afterHonest.verified) fail('a corrupted solution was counted as verified')
 visitor2.close()
 

@@ -168,6 +168,9 @@ pub(crate) fn set_peer_factory(factory: js_sys::Function) {
     webrtc::set_peer_factory(factory);
 }
 
+/// Held by a client for as long as it lives; see [`pool::Lease`].
+pub(crate) use pool::Lease;
+
 /// Open a session ahead of time and wait for it (see [`pool::warm`]).
 pub(crate) async fn warm(config: CarrierConfig) -> io::Result<()> {
     pool::warm(&config).await

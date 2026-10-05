@@ -13,7 +13,7 @@ use futures::channel::oneshot;
 use futures::future::{select, Either};
 use futures::AsyncReadExt;
 use gloo_timers::future::TimeoutFuture;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io;
 use std::pin::pin;
@@ -39,6 +39,54 @@ struct Pool {
 
 thread_local! {
     static POOLS: RefCell<HashMap<CarrierConfig, Rc<Pool>>> = RefCell::new(HashMap::new());
+    /// How many clients that use Snowflake are alive (see [`Lease`]).
+    static LEASES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Held by every client that uses Snowflake for as long as it lives (see `TorClient.close()`).
+///
+/// The pool below is global, so its parked sessions would otherwise outlive the client that asked for
+/// them: each waits 180 seconds for a dial and holds a JavaScript timer for that long, which in Node
+/// keeps the process running after `close()`. When the last lease is dropped the parked sessions are
+/// released, and a session still being opened is discarded when it arrives instead of being parked.
+pub(crate) struct Lease(());
+
+impl Lease {
+    pub(crate) fn new() -> Self {
+        LEASES.with(|n| n.set(n.get() + 1));
+        Lease(())
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let remaining = LEASES.with(|n| {
+            n.set(n.get().saturating_sub(1));
+            n.get()
+        });
+        if remaining == 0 {
+            release_parked();
+        }
+    }
+}
+
+/// Close every parked session: dropping the sender that would hand it to a dial ends its keeper task,
+/// which drops the session and the expiry timer.
+fn release_parked() {
+    POOLS.with(|pools| {
+        for pool in pools.borrow().values() {
+            let mut state = pool.state.borrow_mut();
+            if matches!(&*state, State::Parked { .. }) {
+                info!("Snowflake: closing a parked session, no client uses it any more");
+                *state = State::Idle;
+            }
+        }
+    });
+}
+
+/// Whether any client that uses Snowflake is alive.
+fn in_use() -> bool {
+    LEASES.with(|n| n.get() > 0)
 }
 
 fn pool_for(config: &CarrierConfig) -> Rc<Pool> {
@@ -119,6 +167,12 @@ pub(super) async fn warm(config: &CarrierConfig) -> io::Result<()> {
 async fn open_and_park(pool: Rc<Pool>) {
     let result = open(pool.config.clone()).await;
     let next = match result {
+        Ok(stack) if !in_use() => {
+            // Every client that wanted a session has been closed: do not park it.
+            info!("Snowflake: dropping a session opened for a client that has since closed");
+            drop(stack);
+            State::Idle
+        }
         Ok(stack) => {
             let (take, take_rx) = oneshot::channel();
             wasm_bindgen_futures::spawn_local(keep(stack, take_rx));

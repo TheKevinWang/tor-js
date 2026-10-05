@@ -42,7 +42,10 @@ so a service can run in WebAssembly (`crates/tor-js-wasm/src/host.rs`).
    `start_accept_thread`); `check_solve` stays synchronous (one Equi-X verification, milliseconds with the
    interpreter). Upstream's loops and the seed-rotation task never end; here a `closed` flag, set when the
    inbound channel ends (the service was dropped), ends all three, so no timer is left running for a
-   service that is gone. The percent change of the suggested effort is computed on signed values
+   service that is gone. The two that sleep for minutes race their sleep against that event
+   (`RendRequestReceiver::wait_closed`), because their shared state holds the directory manager, which
+   holds the circuit manager and the channels: a task asleep for five minutes would keep a closed
+   client's connections open for five minutes. The percent change of the suggested effort is computed on signed values
    (upstream subtracts two `u32`s, which wraps when the effort went down).
 7. `src/pow.rs`, `src/pow/v1.rs`, `src/pow/v1_stub.rs`, `src/lib.rs`: `PowStats` and `PowStatsSnapshot`
    (verified, rejected, enqueued, dropped, queue length, suggested effort, largest effort seen), counted

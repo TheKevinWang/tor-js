@@ -457,7 +457,14 @@ impl<R: Runtime, Q: MockableRendRequest + Send + 'static> PowManagerGeneric<R, Q
 
             tracing::debug!(next_wakeup = ?delay, "Recalculated PoW seeds.");
 
-            runtime.sleep(delay).await;
+            // tor-js patch: end at once when the service does (see RendRequestReceiver::wait_closed).
+            let queue = self
+                .0
+                .read()
+                .expect("Lock poisoned")
+                .rend_request_rx
+                .clone();
+            futures::future::select(Box::pin(runtime.sleep(delay)), Box::pin(queue.wait_closed())).await;
         }
     }
 
@@ -919,6 +926,9 @@ struct RendRequestReceiverInner<R, Q> {
     /// serve this queue can stop (tor-js patch).
     closed: bool,
 
+    /// Tasks waiting for `closed` (see [`RendRequestReceiver::wait_closed`]).
+    close_wakers: Vec<Waker>,
+
     /// Counters (tor-js patch).
     stats: Arc<PowStats>,
 }
@@ -952,6 +962,7 @@ impl<R: Runtime, Q: MockableRendRequest + Send + 'static> RendRequestReceiver<R,
             suggested_effort,
             status_tx,
             closed: false,
+            close_wakers: Vec::new(),
             stats,
         })))
     }
@@ -959,6 +970,39 @@ impl<R: Runtime, Q: MockableRendRequest + Send + 'static> RendRequestReceiver<R,
     /// Whether the service has shut down and this queue will get no more requests.
     pub(crate) fn is_closed(&self) -> bool {
         self.0.lock().expect("Lock poisoned").closed
+    }
+
+    /// Record that the service has shut down, and wake whoever is waiting for it.
+    fn mark_closed(&self) {
+        let wakers = {
+            let mut inner = self.0.lock().expect("Lock poisoned");
+            inner.closed = true;
+            inner.status_tx.send_shutdown();
+            std::mem::take(&mut inner.close_wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Resolves when the service has shut down.
+    ///
+    /// The tasks that serve this queue sleep for minutes at a time; racing their sleeps against this lets
+    /// them end the moment the service does. That matters because they hold the directory manager (through
+    /// the shared state), which holds the circuit manager and so the channels: a task asleep for five
+    /// minutes would keep a closed client's connections open for five minutes.
+    async fn wait_closed(&self) {
+        std::future::poll_fn(|cx| {
+            let mut inner = self.0.lock().expect("Lock poisoned");
+            if inner.closed {
+                return std::task::Poll::Ready(());
+            }
+            if !inner.close_wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                inner.close_wakers.push(cx.waker().clone());
+            }
+            std::task::Poll::Pending
+        })
+        .await
     }
 
     // tor-js patch: upstream runs these two loops on blocking operating-system threads and
@@ -1152,9 +1196,7 @@ impl<R: Runtime, Q: MockableRendRequest + Send + 'static> RendRequestReceiver<R,
             let rend_request = if let Some(rend_request) = receiver.next().await {
                 rend_request
             } else {
-                let mut inner = self.0.lock().expect("Lock poisoned");
-                inner.closed = true;
-                inner.status_tx.send_shutdown();
+                self.mark_closed();
                 return Ok(());
             };
 
@@ -1293,7 +1335,7 @@ impl<R: Runtime, Q: MockableRendRequest + Send + 'static> RendRequestReceiver<R,
                 return Ok(());
             }
 
-            runtime.sleep(wait_time).await;
+            futures::future::select(Box::pin(runtime.sleep(wait_time)), Box::pin(self.wait_closed())).await;
 
             let mut inner = self.0.lock().expect("Lock poisoned");
             let now = runtime.now();
@@ -1801,12 +1843,9 @@ mod test {
             runtime.progress_until_stalled().await;
             assert!(receiver.is_closed());
 
-            // The expiry task notices after its next wake-up and ends, so no timer is left
-            // running for a service that is gone.
-            runtime.advance_by(Duration::from_secs(3600)).await;
-            runtime.progress_until_stalled().await;
-            assert!(receiver.is_closed());
-            // Each task holds a clone of the queue; with both ended, only this test's is left.
+            // Both tasks end at once, without waiting for a sleep to run out (they sleep for
+            // minutes, and hold the directory manager while they do). Each holds a clone of the
+            // queue; with both ended, only this test's is left.
             assert_eq!(Arc::strong_count(&receiver.0), 1, "a task is still running");
         });
     }
