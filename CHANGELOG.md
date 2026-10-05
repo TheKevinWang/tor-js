@@ -43,6 +43,24 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **Host an onion service from a browser tab or a Node process: `client.serve()`, `client.listen()`.** A page
+  can now be an onion service, not only visit one: `client.serve(handler)` answers HTTP requests with a
+  `Response` and returns a `.onion` address any tor-js client or Tor Browser can visit; `client.listen()`
+  gives raw duplex connections for protocols of your own. The address comes from a 32-byte identity the
+  caller keeps (`TorClient.generateIdentity()`, `TorClient.onionAddress()`); limits on ports, concurrent
+  visitors and request size/time protect the host. Everything but the identity is held in memory, so a
+  restarted host picks new introduction points. Needs a vendored `tor-hsservice` with in-memory state
+  (`crates/patches/tor-hsservice/PATCH.md`). Demo: `website/host.html`. Live checks:
+  `test/hs-live-node.mjs`, `test/hs-live-lifecycle.mjs`. The WASM grows 290 kB gzip (2.12 to 2.41 MB), so
+  `tor-js/wasm-base64` is about 3.1 MB and `tor-js/wasm-file` 2.3 MB plus 41 kB of JavaScript.
+- **A browse-anything web proxy over Tor for static hosts (`web-proxy/`).** Host a folder of static files
+  (GitHub Pages) and a visitor can open any URL or `.onion` address in it; the requests are made by the
+  visitor's own browser through Tor, so the host never sees what is browsed. Ultraviolet (unmodified) rewrites
+  pages; the new `src/proxy/` module is a bare-mux transport that sends its requests through `TorClient`
+  (fixed Tor Browser-style User-Agent, gzip decoding, repeated `Set-Cookie`, retry of failed GET/HEAD, no
+  WebSockets). The Service Worker fails closed (403 for anything not rewritten to go over Tor, the injected
+  scripts served from its cache, a `'self'`-only Content-Security-Policy) and the page being read stays in the
+  URL fragment. See `web-proxy/README.md`; ExecPlan in `.agent/web-proxy-execplan.md`.
 - **Static-site adapter (`tor-js/site`).** A Service Worker plus a
   `tor-site.json` manifest route an existing site's backend paths over Tor to an
   onion service while everything else stays on the static host, with no change
