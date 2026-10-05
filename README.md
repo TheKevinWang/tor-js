@@ -202,6 +202,26 @@ service.close(); // take it offline
 
 Try it at `website/host.html` (`npm run website`): open it in two tabs, host in one, visit from the other. Internals and the arti patch that makes this possible are described in `crates/patches/tor-hsservice/PATCH.md`.
 
+### Hosting from a worker
+
+`client.serve()` runs the service in the page that called it: reload the page and the service is gone. `startHostWorker()` runs the Tor client, the service and your handler in a SharedWorker instead, so that every tab of your site shares one service (one address, one set of Tor circuits) and a reload of one tab does not disturb it while another tab is open.
+
+```javascript
+import { startHostWorker } from 'tor-js/host';
+
+const service = await startHostWorker({
+  handlerUrl: '/handler.js',        // a module: export default (request) => new Response('hello')
+  identity,                         // 32 bytes you keep; omit for a fresh one (service.identity)
+  onStatus: (s) => console.log(s.state, s.pow),
+});
+console.log(`http://${service.onion}/`, service.shared);
+// service.stop() ends it for every tab; service.detach() only leaves this one
+```
+
+The handler is a module the worker imports (it cannot be a function of your page, because the page can go away while the service goes on): its default export takes a `Request` and returns a `Response`, and it has no `window` or DOM. Tabs that call `startHostWorker` with the same identity connect to the same worker; the later ones find the service already running and are online at once. Pages report `{ state: "starting" | "online" | "closed" | "error", onion, pow, attached }` through `onStatus`/`service.status`. The worker script is `host-worker.js`, shipped next to the package (`tor-js/host-worker.js`); a dev server or bundler that does not serve the package's files needs `workerUrl`. Options besides those above: `wasmUrl` (default: the file this page loaded, or its bytes when it has no URL), `ports`, `maxConnections`, `proofOfWork`, `bootstrapUrl`, `keepAliveMs`. The worker uses the Snowflake WebSocket carrier (workers have no `RTCPeerConnection`), and `startHostWorker` adds about 67 kB of JavaScript in `host-worker.js`, loaded only when you call it.
+
+**What it does not do.** A SharedWorker lasts only while some tab of the origin is open: close every tab and the service is gone, and so is a reload of the *only* tab (measured in Chromium 152: the worker is destroyed with its last page, and the service starts again in about ten seconds under the same address; visitors that hold its old details can take minutes to reach it, see the limits above). It survives reloads and navigations when another tab of the site is open. Where `SharedWorker` does not exist, `startHostWorker` uses a dedicated worker, which belongs to its page (`service.shared` is `false`). Whether a browser slows a hidden tab's service is not settled here: in the desktop app's Chromium a hidden page's service answered every probe for twelve minutes, but that browser does not throttle background timers (`test/hs-probe.mjs` measures it in one that does).
+
 ## Gateway
 
 Browsers can't open raw TCP sockets, so to reach Tor relays from a browser you connect through a **gateway** — a small server that proxies relay connections and serves a fast-bootstrap snapshot of the Tor directory. (In Node.js/Deno tor-js opens TCP directly, so a gateway is optional there — used only for fast bootstrap.)

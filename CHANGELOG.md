@@ -43,6 +43,13 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
+- **Host an onion service from a worker: `startHostWorker()`.** The service, its Tor client and its request
+  handler run in a SharedWorker (`tor-js/host-worker.js`, about 67 kB, loaded only when used), so all tabs of an
+  origin share one service and a reload of one tab leaves it running while another tab is open. A reload of the
+  only tab, or closing every tab, still ends it (measured in Chromium 152: the worker dies with its last
+  page). Pages see its state and proof-of-work counters through `onStatus`. The handler is a module URL, not a
+  closure. Part of the host build (`tor-js/host`); the default build has the function but it throws
+  `HostingUnavailableError`.
 - **Visiting clients pay for priority by default (`TorClientOptions.pow`).** A busy onion service serves the
   visitors who did the most proof of work first, but a plain `TorClient` never paid unless the application
   installed a solver. Now a client created in a page or in Node installs one that runs the work on worker

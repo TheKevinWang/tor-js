@@ -60,6 +60,7 @@
     "./tor_js_bg.wasm": "./dist/tor_js_bg.wasm",
     "./pow-node-worker.js": "./dist/pow-node-worker.js",
     "./pow-worker.js": "./dist/pow-worker.js",
+    "./host-worker.js": "./dist/host-worker.js",
     "./tor_js_host_bg.wasm": "./dist/tor_js_host_bg.wasm"
   },
   "imports": {

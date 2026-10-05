@@ -30,6 +30,7 @@ async function main() {
     buildWorker,
     buildSite,
     buildPowWorkers,
+    buildHostWorker,
     verifyDeclarationMaps,
     verifyGzipSizes,
   ];
@@ -188,6 +189,35 @@ async function buildPowWorkers() {
     plugins: [plugin],
   });
   console.log(`Built proof-of-work workers: dist/pow-node-worker.js ${(readFileSync(node).length / 1024).toFixed(0)} kB, dist/pow-worker.js ${(readFileSync(page).length / 1024).toFixed(0)} kB`);
+}
+
+// The worker that hosts an onion service for startHostWorker() (src/host/worker/): a SharedWorker script, bundled
+// against the HOST build's glue. It does not embed the WASM: the page tells it where to load it from.
+async function buildHostWorker() {
+  const outfile = resolve(distDir, 'host-worker.js');
+  const version = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')).version;
+  await esbuildBuild({
+    entryPoints: [resolve(__dirname, 'src/host/worker/hostWorker.ts')],
+    outfile,
+    bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true, logLevel: 'error',
+    external: [
+      '@kpstreams/webrtc-client', '@kpstreams/quic-client', '@kpstreams/core',
+      'node:net', 'node:stream', 'node:crypto',
+      'node:fs', 'node:fs/promises', 'node:os', 'node:path', 'node:url', 'node:worker_threads',
+    ],
+    define: {
+      __WASM_SHA256__: '""',
+      __PACKAGE_VERSION__: JSON.stringify(version),
+      'import.meta.url': 'self.location.href',
+    },
+    plugins: [{
+      name: 'torjs-wasm-resolve',
+      setup(b) {
+        b.onResolve({ filter: /^#wasm$/ }, () => ({ path: resolve(pkgHostDir, 'tor_js_host.js') }));
+      },
+    }],
+  });
+  console.log(`Built hosting worker: dist/host-worker.js ${(readFileSync(outfile).length / 1024).toFixed(0)} kB`);
 }
 
 function cleanDist() {
