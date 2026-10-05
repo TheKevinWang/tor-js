@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>html{background:#0c0a12;color:#ece9f6}</style>
+  <title>Host an onion service — tor-js</title>
+  <meta name="description" content="Host a Tor onion service from this browser tab: no server, and visitors learn nothing about your network address." />
+  <link rel="icon" href="/onion.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="tools-page">
+    <div class="page-head">
+      <h1>Host an onion service from this tab</h1>
+      <p>This page runs a full Tor client (Arti, compiled to WebAssembly) and can make itself an onion service: a website at a <span class="mono">.onion</span> address that anyone with Tor can visit, with no server involved. Visitors never learn your network address, and you never learn theirs. Open this page in two tabs (or two browsers): host in one, visit in the other.</p>
+    </div>
+
+    <div class="demo-steps">
+      <section class="card demo-step" id="step-connect">
+        <div class="step-head">
+          <span class="step-badge">1</span>
+          <h2>Connect over Snowflake</h2>
+          <span class="dot" id="dot"></span>
+          <span class="step-status" id="status">Not connected</span>
+        </div>
+        <p class="notice">The tab connects to Tor through the Snowflake bridge, like the other demos. Hosting and visiting use the same connection.</p>
+        <div class="btn-row">
+          <button class="btn" id="connect">Connect</button>
+          <button class="btn secondary" id="disconnect" disabled>Disconnect</button>
+        </div>
+      </section>
+
+      <section class="card demo-step locked" id="step-host">
+        <div class="step-head">
+          <span class="step-badge">2</span>
+          <h2>Host</h2>
+          <span class="dot" id="host-dot"></span>
+          <span class="step-status" id="host-status">Offline</span>
+        </div>
+        <div class="field">
+          <label>Your address</label>
+          <div class="mono" id="address" style="word-break:break-all">…</div>
+        </div>
+        <p class="notice">
+          The address comes from a secret key kept in this browser (local storage), so it is the same every time you host from here. Anyone who gets that key can host as you; clearing this site's data retires the address. The service is reachable only while this tab is open and online; a background tab can be slow.
+        </p>
+        <div class="btn-row">
+          <button class="btn" id="go-online">Go online</button>
+          <button class="btn secondary" id="go-offline" disabled>Go offline</button>
+          <button class="btn ghost sm" id="new-identity">New address</button>
+        </div>
+        <div class="field" style="margin-top:1rem">
+          <label>Requests received</label>
+          <div id="requests" class="console" style="max-height:10rem;overflow:auto"></div>
+        </div>
+      </section>
+
+      <section class="card demo-step locked" id="step-visit">
+        <div class="step-head">
+          <span class="step-badge">3</span>
+          <h2>Visit</h2>
+        </div>
+        <div class="field">
+          <label for="url">URL</label>
+          <input type="url" id="url" class="mono" spellcheck="false" placeholder="http://….onion/" />
+        </div>
+        <button class="btn" id="fetch">Send request →</button>
+        <div id="response" class="response empty">No request yet.</div>
+      </section>
+    </div>
+  </div>
+
+  <div class="log-drawer" id="log-drawer">
+    <div class="log-bar">
+      <button class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="log">
+        <span class="log-chevron">▾</span>
+        <span class="log-bar-title">Log</span>
+        <span class="log-latest" id="log-latest">Idle — connect to begin</span>
+        <span class="log-count" id="log-count">0</span>
+      </button>
+      <button class="btn ghost sm" id="clear-log">Clear</button>
+    </div>
+    <div class="log-body"><div id="log" class="console"></div></div>
+  </div>
+
+  <script type="module" src="/src/pages/host.js"></script>
+</body>
+</html>
