@@ -1,4 +1,4 @@
-// Types for hosting an onion service (see .agent/onion-service-host-execplan.md).
+// Types for hosting an onion service.
 
 /** Options for {@link TorClient.listen} and {@link TorClient.serve}. */
 export interface ListenOptions {

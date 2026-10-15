@@ -1,6 +1,6 @@
 // Unit tests for src/site/requestPolicy.ts: deciding who started a request from what a Service Worker
 // can see, and what that request may carry. The evidence in each case is what Chromium 152 showed a
-// probe Service Worker (see .agent/code-review-fixes-execplan.md, Surprises & Discoveries).
+// probe Service Worker.
 //
 //   npm run test:unit
 

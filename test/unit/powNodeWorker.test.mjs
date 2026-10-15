@@ -1,6 +1,5 @@
 // Offline test of the Node proof-of-work worker (src/pow/powWorkerNode.ts) and the pool on top of it: a
-// real worker thread loads the real WASM and solves a real puzzle. See
-// .agent/visitor-pays-by-default-execplan.md.
+// real worker thread loads the real WASM and solves a real puzzle.
 //
 //   npm run test:unit
 //

@@ -1,5 +1,5 @@
 // Unit tests for the default proof-of-work solver a plain TorClient installs (src/pow/autoInstall.ts),
-// with a fake realm and fake workers. See .agent/visitor-pays-by-default-execplan.md.
+// with a fake realm and fake workers.
 //
 //   npm run test:unit
 

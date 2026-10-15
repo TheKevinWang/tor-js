@@ -1,5 +1,5 @@
 // Unit tests for the message handling of the hosting worker (src/host/worker/protocol.ts), with a fake service,
-// fake pages and a fake clock. See .agent/worker-hosting-execplan.md.
+// fake pages and a fake clock.
 //
 //   npm run test:unit
 

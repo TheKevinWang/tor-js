@@ -633,7 +633,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
 /// Lowest circuit-build timeout (ms) used when connecting through bridges.
 /// In six cold starts with it every one reached a circuit; in three without it
 /// two ended with the bridge disabled for "mysterious" circuit deaths, both on
-/// a slow proxy (connect-speed-execplan.md, Artifacts).
+/// a slow proxy.
 const CIRCUIT_TIMEOUT_FLOOR_MS: i32 = 7_000;
 
 /// Wait (up to a minute) until arti can build a circuit through its bridge.

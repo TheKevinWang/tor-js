@@ -1,5 +1,4 @@
-// The error a build without hosting gives when asked to host (see
-// .agent/host-pow-and-optional-host-execplan.md): the default `tor-js` build leaves the service
+// The error a build without hosting gives when asked to host: the default `tor-js` build leaves the service
 // code out so its WASM stays small, and the `tor-js/host` build includes it.
 
 export const HOSTING_UNAVAILABLE_MESSAGE =

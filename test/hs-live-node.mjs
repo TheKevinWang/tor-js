@@ -1,9 +1,8 @@
 // Live check (needs network): one tor-js client hosts an onion service, a second tor-js client
-// visits it, both over the real Tor network through Snowflake. See
-// .agent/onion-service-host-execplan.md.
+// visits it, both over the real Tor network through Snowflake.
 //
-//   (build first, on Windows: the two wasm-pack commands and then node build.mjs; see the ExecPlan
-//    .agent/host-pow-and-optional-host-execplan.md. Hosting is in the host build: tor-js/host)
+//   (build first, on Windows: the two wasm-pack commands and then node build.mjs.
+//    Hosting is in the host build: tor-js/host)
 //   node test/hs-live-node.mjs
 //
 // A new onion service needs time before visitors can reach it (it must set up introduction points

@@ -1,5 +1,4 @@
-// Live check (needs network): the lifecycle of a hosted onion service. See
-// .agent/onion-service-host-execplan.md, Milestone 5.
+// Live check (needs network): the lifecycle of a hosted onion service.
 //
 //   node test/hs-live-lifecycle.mjs
 //
@@ -11,7 +10,7 @@
 //   5. closing the listener and both clients leaves no handle running that hosting added.
 //
 // This script ends with process.exit(0) out of habit; that a closed client lets Node exit by itself is
-// checked on its own in test/close-exits-live.mjs (.agent/close-releases-everything-execplan.md).
+// checked on its own in test/close-exits-live.mjs.
 
 import { TorClient, storage } from '../dist/entryPoints/host-file/index.js'
 

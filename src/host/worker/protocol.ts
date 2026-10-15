@@ -1,6 +1,6 @@
 /**
  * What runs inside the hosting worker, apart from the Tor client itself: who is attached, what state the
- * service is in, and when to stop it. See .agent/worker-hosting-execplan.md.
+ * service is in, and when to stop it.
  *
  * Kept free of worker globals and of the Tor client so that a test can drive it with fakes: the real
  * service is a function the worker script hands in (`deps.start`), and time is injectable.

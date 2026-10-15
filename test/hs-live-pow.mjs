@@ -1,7 +1,6 @@
-// Live check (needs network): proof of work on a hosted onion service. See
-// .agent/host-pow-and-optional-host-execplan.md, Milestone 3.
+// Live check (needs network): proof of work on a hosted onion service.
 //
-//   (build first: wasm-pack build ... && node build.mjs; see the ExecPlan)
+//   (build first: wasm-pack build ... && node build.mjs)
 //   node test/hs-live-pow.mjs
 //
 // A hosted service has proof of work on by default. This test checks, over the real Tor network:
@@ -17,7 +16,7 @@
 // function; here a plain function solves in-process with the WASM's own solver, loaded as a
 // second instance of the WASM.
 //
-// ENTRY: which build hosts. After the ExecPlan's Milestone 4 hosting is only in the host build.
+// ENTRY: which build hosts. Hosting is only in the host build.
 
 import { readFileSync } from 'node:fs'
 import { webcrypto } from 'node:crypto'

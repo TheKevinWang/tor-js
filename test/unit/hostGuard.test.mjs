@@ -1,4 +1,4 @@
-// Unit tests for hosting being an optional build (see .agent/host-pow-and-optional-host-execplan.md):
+// Unit tests for hosting being an optional build:
 // the default build of the WASM has no onion service code and says so clearly; the host build has it
 // and TorClient forwards listen() options to it.
 //

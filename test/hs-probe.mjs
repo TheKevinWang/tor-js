@@ -1,5 +1,4 @@
-// Probe: how reliably does a hosted onion service answer over time? See
-// .agent/worker-hosting-execplan.md, Milestone 1.
+// Probe: how reliably does a hosted onion service answer over time?
 //
 //   node test/hs-probe.mjs <address[.onion]> [seconds=720] [intervalSeconds=30]
 //

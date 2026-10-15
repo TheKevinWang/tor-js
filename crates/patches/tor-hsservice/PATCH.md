@@ -53,8 +53,7 @@ so a service can run in WebAssembly (`crates/tor-js-wasm/src/host.rs`).
    `RunningOnionService::pow_stats()`. The stub reports zeros with `enabled: false`.
 8. `src/pow/v1.rs` tests: the helper starts `start_tasks`; four tests added (counters, overflow and expiry
    counted as dropped, tasks end on shutdown, zero stats). The five upstream queue tests plus these run in a
-   scratch crate that restores arti's dev-dependencies and switches off every other test module (see
-   `.agent/host-pow-and-optional-host-execplan.md`, Concrete Steps): 9 pass.
+   scratch crate that restores arti's dev-dependencies and switches off every other test module: 9 pass.
 
 Consequences for a service: a restarted host picks fresh introduction points, and the replay
 logs last only as long as the running service. The service's identity key is not part of this

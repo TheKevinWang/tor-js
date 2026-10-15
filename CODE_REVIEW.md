@@ -152,11 +152,9 @@ The highest-value testing improvement is a small integration suite exercising th
 
 Address R1 and R2 first because they affect privacy and authenticated requests. R3 is a focused correctness fix that should also be done early. Resolve R4's trust model and architecture before presenting the proxy as suitable for arbitrary untrusted sites. Then complete R5 and the corresponding integration coverage.
 
-For substantial implementation or isolation redesign, create an ExecPlan following the project's [planning instructions](../.agent/PLANS.md). This file records review findings; implementation and verification of fixes remain outstanding.
-
 ## Status of the findings (2026-10-05)
 
-All five findings were confirmed against the source and addressed; the work is recorded in `../.agent/code-review-fixes-execplan.md`. Nothing has been committed.
+All five findings were confirmed against the source and addressed.
 
 | ID | Status | What changed | How it was checked |
 | --- | --- | --- | --- |

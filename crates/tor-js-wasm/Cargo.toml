@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 default = []
 # Host an onion service from this client: TorClient.listen() / serve() in the JavaScript API. Adds about
 # 330 KB (gzip) to the WASM, so the default build leaves it out; the npm package ships both builds
-# (tor-js and tor-js/host). See .agent/host-pow-and-optional-host-execplan.md.
+# (tor-js and tor-js/host).
 onion-service-host = ["dep:tor-hsservice", "dep:tor-keymgr", "dep:tor-proto", "dep:tor-cell", "dep:tor-config-path", "dep:safelog"]
 
 [dependencies]

@@ -1,5 +1,5 @@
 // Live check (needs network): a plain TorClient pays proof of work with no solver supplied by the
-// application. See .agent/visitor-pays-by-default-execplan.md.
+// application.
 //
 //   node test/visitor-pow-live.mjs
 //
@@ -89,6 +89,6 @@ await service.done
 host.close()
 console.log('PASS')
 
-// Closing every client lets the process end by itself (.agent/close-releases-everything-execplan.md): say so if
+// Closing every client lets the process end by itself: say so if
 // something here keeps it alive.
 setTimeout(() => fail('the process did not exit by itself after every client was closed'), 150_000).unref()

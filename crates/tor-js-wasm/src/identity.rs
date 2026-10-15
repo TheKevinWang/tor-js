@@ -7,7 +7,7 @@
 //! address is the one any ed25519 implementation derives from that seed.
 //!
 //! No WebAssembly dependencies: this file is unit-tested natively (the full crate's tests do not
-//! link on every machine; see `.agent/onion-service-host-execplan.md`).
+//! link on every machine).
 
 use safelog::DisplayRedacted as _;
 use tor_hscrypto::pk::{HsIdKey, HsIdKeypair};

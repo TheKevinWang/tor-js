@@ -156,5 +156,3 @@ torrc is not distinguishable from the minimal one; a difference of about a secon
 first visit cannot be ruled out. Later requests are a normal request to the service either way.
 Measuring this needs services that are never restarted between samples; restarting one identity
 for each configuration produced differences of 5 to 40 times that were an effect of the restarts.
-
-`.agent/server-hardening-execplan.md` has the whole record.

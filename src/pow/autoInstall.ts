@@ -1,5 +1,5 @@
 /**
- * Let a plain `TorClient` pay proof of work by default (see .agent/visitor-pays-by-default-execplan.md).
+ * Let a plain `TorClient` pay proof of work by default.
  *
  * When the Tor client connects to an onion service that asks for proof of work it calls
  * `globalThis.__torJsPowSolve(blindId, seed, effort)` (see install.ts and the vendored tor-hsclient's

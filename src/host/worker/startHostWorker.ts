@@ -1,6 +1,6 @@
 /**
  * Host an onion service from a worker instead of from the page, so that it survives a page reload and is
- * shared by every tab of the origin. See .agent/worker-hosting-execplan.md and the README ("Hosting from a
+ * shared by every tab of the origin. See the README ("Hosting from a
  * worker"). The worker side is hostWorker.ts; the messages are in protocol.ts.
  */
 

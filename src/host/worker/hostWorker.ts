@@ -2,7 +2,7 @@
  * The hosting worker: a SharedWorker (or a dedicated Worker where SharedWorker does not exist) that runs a
  * Tor client and an onion service, so that the service outlives a page reload and is shared by every tab of
  * the origin. Bundled to `dist/host-worker.js` against the host build of the WASM (build.mjs).
- * See .agent/worker-hosting-execplan.md; the page side is startHostWorker.ts and the message handling is
+ * The page side is startHostWorker.ts and the message handling is
  * protocol.ts.
  */
 

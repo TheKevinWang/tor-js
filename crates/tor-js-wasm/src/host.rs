@@ -4,8 +4,7 @@
 //! It never accepts inbound connections: it dials out to Tor relays (so a browser can host one),
 //! publishes where visitors can reach it, and each visitor's circuit is joined to one of its own.
 //! arti, the Tor implementation tor-js is built on, has the service half (`tor-hsservice`); this
-//! file wires it to a running `TorClient` and to JavaScript. See
-//! `.agent/onion-service-host-execplan.md` for the design and its limits.
+//! file wires it to a running `TorClient` and to JavaScript.
 //!
 //! - The service's identity is a 32-byte seed the page keeps (`identity.rs`). It is loaded into
 //!   an in-memory keystore for the life of the service.

@@ -1,5 +1,4 @@
 // Live check (needs network): closing every TorClient lets a Node process exit by itself.
-// See .agent/close-releases-everything-execplan.md.
 //
 //   node test/close-exits-live.mjs
 //

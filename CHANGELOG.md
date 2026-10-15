@@ -53,7 +53,7 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   `serve()` on the default build throws `HostingUnavailableError`, which names the right import. The CDN loader
   is shared (`src/cdnLoader.ts`); the host one uses only the npm mirrors (the GitHub artifact mirror is filled by
   CI for the default binary only). `scripts/build.sh` and CI build and hash both WASM files; on Windows build
-  them with the two `wasm-pack` commands in `.agent/host-pow-and-optional-host-execplan.md`.
+  them with the two `wasm-pack` commands in `scripts/build.sh`.
 - **Proof of work for hosted services.** A hosted onion service now publishes proof-of-work parameters,
   verifies the solutions visitors send, serves the highest effort first, raises the effort it asks for when it
   is busy, and reports what it did in `service.pow`. On by default; `proofOfWork: false` turns it off and
@@ -131,7 +131,7 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   (fixed Tor Browser-style User-Agent, gzip decoding, repeated `Set-Cookie`, retry of failed GET/HEAD, no
   WebSockets). The Service Worker fails closed (403 for anything not rewritten to go over Tor, the injected
   scripts served from its cache, a `'self'`-only Content-Security-Policy) and the page being read stays in the
-  URL fragment. See `web-proxy/README.md`; ExecPlan in `.agent/web-proxy-execplan.md`.
+  URL fragment. See `web-proxy/README.md`.
 - **The web proxy is tested on real sites, and works on more of them.** `node web-proxy/test/compat/run.mjs`
   opens 61 everyday sites (search engines, news, documentation, package registries, shops, forms, redirects,
   cookies, gzip) twice in headless Chromium, directly and through the proxy, and compares title, text, images,
@@ -140,7 +140,7 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   to catch leaks on a deliberately unsafe build). Over 61 sites no request left the proxy. The rewriter is now
   a build-time choice, `--engine scramjet` (the default) or `--engine uv`; both are AGPL-3.0, Ultraviolet is
   shipped unmodified (Scramjet gained a small build-time patch later, see "Fixed (web proxy)"), and Scramjet passes
-  or warns on 49 of the 51 sites that open directly and are not behind a challenge, Ultraviolet on 45 of 52 (full re-run of 2026-10-12). ExecPlan in `.agent/proxy-compat-execplan.md`.
+  or warns on 49 of the 51 sites that open directly and are not behind a challenge, Ultraviolet on 45 of 52 (full re-run of 2026-10-12).
 
 ### Fixed (web proxy)
 
@@ -197,7 +197,7 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
     patched code is not found exactly once, so a new Scramjet version cannot skip the patch unnoticed.
   `node web-proxy/test/compat/chat.mjs --browser firefox` (or `chromium`) repeats the check: it opens ChatGPT through
   the proxy, waits for the page's app to start, sends "hello", and fails unless an answer appears and the page
-  keeps responding afterwards. The ExecPlan, `.agent/proxy-compat-execplan.md`, records how each fault was found.
+  keeps responding afterwards.
 - **The proxy keeps what it fetched over Tor, like a browser cache would.** Scripts, styles, fonts, images and
   workers that the server marked `immutable` or gave a `max-age` of a minute or more (kept for at most a week) are
   answered from the Service Worker's Cache Storage instead of being fetched over Tor again (`web-proxy/src/cachepolicy.js`,
