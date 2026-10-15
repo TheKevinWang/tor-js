@@ -730,12 +730,13 @@ where
     Ok((status, headers, framing, overflow, http11))
 }
 
-/// Whether a request may ask for its connection to be kept: plain HTTP (a TLS
-/// session is not pooled), a method that is safe to send again if a reused
-/// connection turns out to be dead, no body to resend, and no `Connection`
-/// header of the caller's own to override.
+/// Whether a request may ask for its connection to be kept: HTTP or HTTPS (a kept
+/// HTTPS connection is the TLS session itself, so the next request skips both the
+/// Tor stream and the handshake, about two thirds of a request's cost over Tor), a
+/// method that is safe to send again if a reused connection turns out to be dead,
+/// no body to resend, and no `Connection` header of the caller's own to override.
 pub fn wants_keep_alive(url: &Url, method: &Method, headers: &HashMap<String, String>, body: &RequestBody) -> bool {
-    url.scheme() == "http"
+    matches!(url.scheme(), "http" | "https")
         && (*method == Method::GET || *method == Method::HEAD)
         && matches!(body, RequestBody::None)
         && !has_header(headers, "Connection")
@@ -763,7 +764,8 @@ fn keep_alive_timeout(headers: &[(String, String)]) -> Option<u32> {
 /// that can be used to read the body asynchronously.
 ///
 /// With `release` set and a request that [`wants_keep_alive`], the connection is
-/// kept open; once the body has been read to its exact end `release` receives it.
+/// kept open (over HTTPS, with its TLS session); once the body has been read to its
+/// exact end `release` receives it.
 /// A connection that ends up not reusable (or whose body is not fully read) is
 /// closed instead and `release` is never called.
 #[expect(clippy::too_many_arguments, reason = "HTTP fetch requires many parameters")]
@@ -782,7 +784,11 @@ pub async fn fetch_headers(
     let head = build_request_head(url, &method, &headers, &body, keep_alive)?;
     debug!("Sending {}-byte request head", head.len());
 
-    if is_https {
+    // Over HTTPS the connection is the TLS session on top of the Tor stream. It is boxed like any other, so
+    // everything below (the request, the response head, and handing the connection back for reuse) is the same
+    // for both. A connection that comes back from the pool is already encrypted: the caller passes
+    // `is_https = false` for it.
+    let mut stream: BoxedConn = if is_https {
         let tls_config = tls_config.ok_or_else(|| {
             JsTorError::tls("HTTPS requested but no TLS config provided")
         })?;
@@ -791,47 +797,35 @@ pub async fn fetch_headers(
         let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| JsTorError::tls(format!("Invalid server name '{}': {}", host, e)))?;
 
-        let mut tls_stream = connector
+        let tls_stream = connector
             .connect(server_name, stream)
             .await
             .map_err(|e| {
                 JsTorError::tls(format!("TLS handshake failed with {}: {}", host, e))
             })?;
         info!("TLS connection established with {}", host);
-
-        write_request(&mut tls_stream, &head, body).await?;
-        let (status, resp_headers, framing, overflow, _) =
-            read_response_head(&mut tls_stream, &method).await?;
-
-        info!("Received response headers: status={}", status);
-
-        let reader: BoxedReader = Box::new(tls_stream);
-        Ok(FetchHeadersResult {
-            status,
-            headers: resp_headers,
-            body_reader: BodyReader::new(reader, framing, overflow),
-        })
+        Box::new(tls_stream)
     } else {
-        let mut stream = stream;
+        stream
+    };
 
-        write_request(&mut stream, &head, body).await?;
-        let (status, resp_headers, framing, overflow, http11) =
-            read_response_head(&mut stream, &method).await?;
+    write_request(&mut stream, &head, body).await?;
+    let (status, resp_headers, framing, overflow, http11) =
+        read_response_head(&mut stream, &method).await?;
 
-        info!("Received response headers: status={}", status);
+    info!("Received response headers: status={}", status);
 
-        let reusable = keep_alive && response_allows_reuse(http11, &resp_headers, &framing);
-        let idle_timeout = keep_alive_timeout(&resp_headers);
-        let body_reader = match release {
-            Some(give_back) if reusable => {
-                let slot: ConnSlot = Rc::new(RefCell::new(Some(stream)));
-                let reader: BoxedReader = Box::new(SharedConn(slot.clone()));
-                BodyReader::new(reader, framing, overflow).with_release(slot, give_back, idle_timeout)
-            }
-            _ => BodyReader::new(Box::new(stream), framing, overflow),
-        };
-        Ok(FetchHeadersResult { status, headers: resp_headers, body_reader })
-    }
+    let reusable = keep_alive && response_allows_reuse(http11, &resp_headers, &framing);
+    let idle_timeout = keep_alive_timeout(&resp_headers);
+    let body_reader = match release {
+        Some(give_back) if reusable => {
+            let slot: ConnSlot = Rc::new(RefCell::new(Some(stream)));
+            let reader: BoxedReader = Box::new(SharedConn(slot.clone()));
+            BodyReader::new(reader, framing, overflow).with_release(slot, give_back, idle_timeout)
+        }
+        _ => BodyReader::new(Box::new(stream), framing, overflow),
+    };
+    Ok(FetchHeadersResult { status, headers: resp_headers, body_reader })
 }
 
 /// Find the position of a subsequence in a byte slice
@@ -2098,7 +2092,8 @@ mod tests {
         assert!(wants_keep_alive(&u, &Method::HEAD, &none, &RequestBody::None));
         assert!(!wants_keep_alive(&u, &Method::POST, &none, &RequestBody::None));
         assert!(!wants_keep_alive(&u, &Method::GET, &none, &RequestBody::Bytes(b"x".to_vec())));
-        assert!(!wants_keep_alive(&Url::parse("https://example.com/").unwrap(), &Method::GET, &none, &RequestBody::None));
+        assert!(wants_keep_alive(&Url::parse("https://example.com/").unwrap(), &Method::GET, &none, &RequestBody::None), "a TLS session is kept too");
+        assert!(!wants_keep_alive(&Url::parse("ftp://example.com/").unwrap(), &Method::GET, &none, &RequestBody::None));
         let own: HashMap<String, String> = [("connection".to_string(), "close".to_string())].into();
         assert!(!wants_keep_alive(&u, &Method::GET, &own, &RequestBody::None), "the caller's own Connection header wins");
     }

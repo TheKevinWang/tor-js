@@ -13,11 +13,13 @@
  */
 
 import type { SiteStatus } from './backend.js';
+import { ProgressTracker, type SiteProgress } from './progress.js';
 import { prepareSpare, servePeer } from './peerPage.js';
 import { servePow, type PowPageOptions } from '../pow/powPage.js';
 import { SNOWFLAKE_WEBRTC_STUN } from '../snowflake.js';
 
 export type { SiteStatus } from './backend.js';
+export type { SiteProgress } from './progress.js';
 
 export interface RegisterOptions {
   /** URL of the Service Worker script. Default `tor-site-sw.js`, next to the page. */
@@ -45,6 +47,20 @@ export interface TorSite {
   ready(): Promise<void>;
   /** Subscribe to state changes; returns an unsubscribe function. */
   onStatus(cb: (status: SiteStatus) => void): () => void;
+  /**
+   * How far along connecting is: an estimated percentage and a sentence about the current step,
+   * worked out from the Tor client's log (see progress.ts). The loading screen shows it.
+   */
+  readonly progress: SiteProgress;
+  /** Subscribe to progress changes; returns an unsubscribe function. */
+  onProgress(cb: (progress: SiteProgress) => void): () => void;
+  /**
+   * How many requests to Tor routes are being held back (by this site's pages) because Tor has not
+   * connected yet. The visitor acted before the connection was ready; they go through when it is.
+   */
+  readonly waiting: number;
+  /** Subscribe to changes of {@link TorSite.waiting}; returns an unsubscribe function. */
+  onWaiting(cb: (waiting: number) => void): () => void;
   /**
    * A timeline of the Tor client's log lines and state changes, newest last, each
    * stamped with `performance.now()` (milliseconds since this page began loading).
@@ -80,6 +96,13 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
     if (timeline.length > 500) timeline.shift();
   };
   const listeners = new Set<(s: SiteStatus) => void>();
+  const tracker = new ProgressTracker();
+  const progressListeners = new Set<(p: SiteProgress) => void>();
+  let waiting = 0;
+  const waitingListeners = new Set<(n: number) => void>();
+  const progressChanged = () => {
+    for (const cb of progressListeners) cb(tracker.progress);
+  };
   const debug = opts.debug ?? debugFlag();
   navigator.serviceWorker.addEventListener('message', (event) => {
     const data = event.data as { type?: string; status?: SiteStatus; level?: string; message?: string } | null;
@@ -92,13 +115,21 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
     }
     if (data?.type === 'tor-site-log') {
       note('log', `${data.level} ${data.message}`);
+      if (tracker.log(data.message ?? '')) progressChanged();
       if (debug) console.log(`[tor-site ${data.level}]`, data.message);
+      return;
+    }
+    const held = event.data as { type?: string; pending?: number } | null;
+    if (held?.type === 'tor-site-waiting' && typeof held.pending === 'number') {
+      waiting = held.pending;
+      for (const cb of waitingListeners) cb(waiting);
       return;
     }
     if (data?.type !== 'tor-site-status' || !data.status) return;
     status = data.status;
     note('status', `${status.state}${status.where ? ` (${status.where})` : ''}${status.message ? `: ${status.message}` : ''}`);
     for (const cb of listeners) cb(status);
+    if (tracker.status(status)) progressChanged();
   });
 
   // Where the Tor client runs. By default in a persistent worker that the
@@ -157,6 +188,20 @@ export async function registerTorSite(opts: RegisterOptions = {}): Promise<TorSi
     onStatus(cb) {
       listeners.add(cb);
       return () => listeners.delete(cb);
+    },
+    get progress() {
+      return tracker.progress;
+    },
+    onProgress(cb) {
+      progressListeners.add(cb);
+      return () => progressListeners.delete(cb);
+    },
+    get waiting() {
+      return waiting;
+    },
+    onWaiting(cb) {
+      waitingListeners.add(cb);
+      return () => waitingListeners.delete(cb);
     },
     unregister: () => registration.unregister(),
     timeline,

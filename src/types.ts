@@ -138,4 +138,10 @@ export interface FetchInit {
   headers?: Record<string, string>;
   body?: string | Uint8Array | ArrayBuffer | ReadableStream<Uint8Array>;
   signal?: AbortSignal;
+  /**
+   * Carry this request on a circuit of its own: it does not share a circuit (or a kept connection) with any other
+   * request, so it reaches the site through a different exit. Use it to retry a request that failed at its exit
+   * ("timed out at exit"); the default is to share circuits, which is faster.
+   */
+  isolate?: boolean;
 }

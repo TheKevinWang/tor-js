@@ -19,3 +19,4 @@ export * from '../../../src/pow/powPage.js';
 export * from '../../../src/pow/powRelay.js';
 export * from '../../../src/pow/clientRelay.js';
 export * from '../../../src/pow/manifestPow.js';
+export * from '../../../src/site/progress.js';

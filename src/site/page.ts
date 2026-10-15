@@ -9,10 +9,20 @@
  * path:
  *
  *   const site = await window.torSite;
+ *
+ * Add `data-loading="screen"` (or "true") to cover the page with a loading screen (what is
+ * being set up and why it takes a moment, progress, details for technical visitors,
+ * retry on failure) until Tor is connected. Add `data-loading="transparent"` for no
+ * screen at all: Tor connects in the background while the visitor reads the page, and
+ * is ready by the time they do something that needs the server (leave a comment); if
+ * they are quicker than Tor, a small notice says the request is waiting. Either way a
+ * "Private connection" badge stays in the corner; `data-badge="false"` hides it.
  */
 
 import { registerTorSite, type RegisterOptions, type TorSite } from './register.js';
 import { startFrameRole, startFrameShell } from './frame.js';
+import { showLoadingScreen } from './loading.js';
+import { showConnectionBadge } from './badge.js';
 
 const script = document.currentScript as HTMLScriptElement | null;
 const d = script?.dataset ?? {};
@@ -26,7 +36,8 @@ if (d.role === 'frame') {
   if (d.manifest) opts.manifest = d.manifest;
   if (d.scope) opts.scope = d.scope;
   if (d.host) opts.hostScript = new URL(d.host, document.baseURI).href;
-  if (d.prewarm === 'false') opts.prewarm = false;
+  // Transparent loading means connecting at once, so it overrides data-prewarm="false".
+  if (d.prewarm === 'false' && d.loading !== 'transparent') opts.prewarm = false;
   if (d.debug === 'true') opts.debug = true;
 
   const promise: Promise<TorSite> = registerTorSite(opts);
@@ -35,7 +46,21 @@ if (d.role === 'frame') {
 
   // The persistent shell: show the site in an iframe once Tor is reachable.
   if (d.shell === 'frame') {
-    const start = () => startFrameShell(promise);
+    const start = () => {
+      startFrameShell(promise);
+      if (d.badge !== 'false') showConnectionBadge(promise);
+    };
+    if (document.body) start();
+    else document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else if (d.loading === 'true' || d.loading === 'screen' || d.loading === 'transparent') {
+    // "screen" (or "true"): cover the page with the loading screen until Tor is connected.
+    // "transparent": no screen; Tor connects in the background from the moment the page loads, the
+    // visitor carries on, and only a request that needs Tor before it is ready shows a notice.
+    const screen = d.loading !== 'transparent';
+    const start = () => {
+      if (screen) showLoadingScreen(promise, { until: 'ready' });
+      if (d.badge !== 'false') showConnectionBadge(promise);
+    };
     if (document.body) start();
     else document.addEventListener('DOMContentLoaded', start, { once: true });
   }

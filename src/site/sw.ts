@@ -119,6 +119,19 @@ function publishLog(level: string, message: string): void {
   });
 }
 
+/**
+ * How many requests to Tor routes are being held because Tor is not ready yet. A page shows a notice
+ * while it is above zero ("transparent" loading: no screen, but a visitor who acts before Tor has
+ * connected is told why the request is waiting).
+ */
+let waitingForTor = 0;
+function noteWaiting(delta: number): void {
+  waitingForTor = Math.max(0, waitingForTor + delta);
+  self.clients.matchAll({ includeUncontrolled: true, type: 'window' }).then((all) => {
+    for (const c of all) c.postMessage({ type: 'tor-site-waiting', pending: waitingForTor });
+  });
+}
+
 function publishStatus(status: SiteStatus): void {
   lastStatus = status;
   self.clients.matchAll({ includeUncontrolled: true, type: 'window' }).then((all) => {
@@ -167,6 +180,7 @@ self.addEventListener('message', (event) => {
   if (!data) return;
   if (data.type === 'tor-site-hello') {
     (event.source as Client | null)?.postMessage({ type: 'tor-site-status', status: lastStatus });
+    (event.source as Client | null)?.postMessage({ type: 'tor-site-waiting', pending: waitingForTor });
   } else if (data.type === 'tor-site-warm') {
     // Only sent when no host worker is used. waitUntil keeps this worker alive
     // while Tor connects; without it the browser stops an idle worker after
@@ -394,25 +408,31 @@ async function serve(event: FetchEvent, l: Loaded): Promise<Response> {
       initiator,
     };
     request.signal.addEventListener('abort', () => publishLog('warn', `[sw] the browser aborted ${request.method} ${path}`), { once: true });
-    const backend = await pickBackend(l, request);
-    if (request.signal.aborted) throw abortError(request.signal);
+    const heldForTor = lastStatus.state !== 'ready';
+    if (heldForTor) noteWaiting(1);
     let response: SiteResponse;
     try {
-      response = await backend.handle(siteRequest);
-    } catch (e) {
-      // A host that died before it answered: a safe request can simply be asked
-      // of the Tor client in this worker instead.
-      const safe = request.method === 'GET' || request.method === 'HEAD';
-      if (backend === l.local || !safe || request.signal.aborted) throw e;
-      const why = e instanceof Error ? e.message : String(e);
-      if (needsHost(l)) {
-        // The failed host has been dropped; ask for another live one rather than the local client.
-        publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with another host`);
-        response = await (await waitForHost(l, request.signal)).handle(siteRequest);
-      } else {
-        publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with Tor in the Service Worker`);
-        response = await l.local.handle(siteRequest);
+      const backend = await pickBackend(l, request);
+      if (request.signal.aborted) throw abortError(request.signal);
+      try {
+        response = await backend.handle(siteRequest);
+      } catch (e) {
+        // A host that died before it answered: a safe request can simply be asked
+        // of the Tor client in this worker instead.
+        const safe = request.method === 'GET' || request.method === 'HEAD';
+        if (backend === l.local || !safe || request.signal.aborted) throw e;
+        const why = e instanceof Error ? e.message : String(e);
+        if (needsHost(l)) {
+          // The failed host has been dropped; ask for another live one rather than the local client.
+          publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with another host`);
+          response = await (await waitForHost(l, request.signal)).handle(siteRequest);
+        } else {
+          publishLog('warn', `[sw] ${path}: the host failed (${why}); retrying with Tor in the Service Worker`);
+          response = await l.local.handle(siteRequest);
+        }
       }
+    } finally {
+      if (heldForTor) noteWaiting(-1);
     }
     publishLog('debug', `[sw] ${request.method} ${path} -> ${response.status}${request.mode === 'navigate' ? ' (navigation)' : ''}`);
     const inFrame = l.shell !== null && request.destination === 'iframe';

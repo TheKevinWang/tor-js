@@ -5,6 +5,87 @@
 No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB,
 `tor-js/wasm-file` 1.9 → 2.0 MB) for bridge support and the Snowflake transport.
 
+### Added
+
+- **OnionShare in a web page: `website/onionshare.html`.** OnionShare's desktop app, on tor-js, in a tab: tabs,
+  Share Files, Receive Files, Host a Website and Download a Share (plus "Send Files to a Receiver", because a
+  page has no Tor Browser to upload with), the same settings, a history panel with progress bars, a private
+  key handed over after the address, scheduled start and stop, and a status bar with the Tor connection. A
+  service speaks OnionShare's web interface (`/`, `/download` as the file or a zip with `Range` support,
+  `/upload`, `/upload-ajax`), so Tor Browser is a working other end and the page can fetch from a public
+  OnionShare. Differences, stated on the page and in the README: the private key is HTTP Basic authentication
+  (tor-js hosting has no Tor client authorization) with the same stop after 20 wrong keys; the tab must stay
+  open; received files stay in memory until saved, or are written into a chosen folder where the browser can
+  (Chromium); no chat mode. Plain ES modules in `website/src/onionshare/`, written fresh (OnionShare is GPLv3,
+  this project MIT OR Apache-2.0). Checked by `test/unit/onionshare.test.mjs` over the real onion-service HTTP
+  server on a loopback socket, and live over Tor by `test/onionshare-live.mjs`. No change to the library or its
+  build.
+- **Host an onion service from a worker: `startHostWorker()`.** The service, its Tor client and its request
+  handler run in a SharedWorker (`tor-js/host-worker.js`, about 67 kB, loaded only when used), so all tabs of an
+  origin share one service and a reload of one tab leaves it running while another tab is open. A reload of the
+  only tab, or closing every tab, still ends it (measured in Chromium 152: the worker dies with its last
+  page). Pages see its state and proof-of-work counters through `onStatus`. The handler is a module URL, not a
+  closure. Part of the host build (`tor-js/host`); the default build has the function but it throws
+  `HostingUnavailableError`.
+- **Visiting clients pay for priority by default (`TorClientOptions.pow`).** A busy onion service serves the
+  visitors who did the most proof of work first, but a plain `TorClient` never paid unless the application
+  installed a solver. Now a client created in a page or in Node installs one that runs the work on worker
+  threads (Web Workers; `worker_threads` through the new `pow-node-worker.js`, exported as
+  `tor-js/pow-node-worker.js`), started only when a puzzle comes, and removed when the last client using it
+  closes. It never replaces a solver already installed; `pow: false` turns it off; `maxEffort`, `minEffort`,
+  `workers` and `workerUrl` tune it. Checked offline with real worker threads and live against a hosted
+  service (`test/visitor-pow-live.mjs`). Cost: about 3 kB gzip of JavaScript in every entry point.
+- **`TorClient.close()` lets a Node process exit.** Closing a client used to leave arti's background timers
+  running, some for three minutes, so a script that closed its client did not end (every live script finished
+  with `process.exit(0)`). Now `close()` unreferences the runtime's timers (`WasmRuntime::shutdown`; they still
+  fire, so arti can finish tearing itself down, but none holds the event loop open), the pool of spare Snowflake
+  sessions is released when the last client using it closes (`snowflake::Lease`), and a hosted service's
+  proof-of-work tasks end with the service instead of after a five minute sleep. When the last client using
+  Snowflake closes, the Snowflake sessions still in use are ended too, so what arti has in flight (a descriptor
+  upload, a circuit build) fails at once instead of running out its timeouts (minutes on a bad network): the
+  process ends 0.2 s after `close()`. A client closed while still bootstrapping ends when bootstrap does.
+  `test/close-exits-live.mjs` checks all three cases.
+- **Hosting is a separate build: `tor-js/host`.** The onion service code is no longer in the default WASM, so
+  a page that only visits onion services does not pay for it: `tor-js`, `tor-js/wasm-file` and
+  `tor-js/wasm-base64` ship the same WASM as before hosting existed (5,472,447 bytes, 2.12 MB gzip), and
+  `tor-js/host`, `tor-js/host/wasm-file` and `tor-js/host/wasm-base64` ship `tor_js_host_bg.wasm`, built with the
+  new Cargo feature `onion-service-host` (6,370,381 bytes, 2.45 MB gzip; about 330 kB more). Calling `listen()` or
+  `serve()` on the default build throws `HostingUnavailableError`, which names the right import. The CDN loader
+  is shared (`src/cdnLoader.ts`); the host one uses only the npm mirrors (the GitHub artifact mirror is filled by
+  CI for the default binary only). `scripts/build.sh` and CI build and hash both WASM files; on Windows build
+  them with the two `wasm-pack` commands in `.agent/host-pow-and-optional-host-execplan.md`.
+- **Proof of work for hosted services.** A hosted onion service now publishes proof-of-work parameters,
+  verifies the solutions visitors send, serves the highest effort first, raises the effort it asks for when it
+  is busy, and reports what it did in `service.pow`. On by default; `proofOfWork: false` turns it off and
+  `proofOfWork: { queueDepth }` sizes the queue (default 256, not arti's 8192, which can take 32 MB). An idle
+  service asks for no effort, and visitors that cannot solve are still served. In the vendored `tor-hsservice`
+  the two request-handling loops, which arti runs on blocking threads, are async tasks that end when the
+  service does. Checked live: a visitor paying effort 4 or 6 was verified (by a Node host and by a browser
+  tab), a corrupted solution was rejected and not served (`test/hs-live-pow.mjs`).
+- **Host an onion service from a browser tab or a Node process: `client.serve()`, `client.listen()`.** A page
+  can now be an onion service, not only visit one: `client.serve(handler)` answers HTTP requests with a
+  `Response` and returns a `.onion` address any tor-js client or Tor Browser can visit; `client.listen()`
+  gives raw duplex connections for protocols of your own. The address comes from a 32-byte identity the
+  caller keeps (`TorClient.generateIdentity()`, `TorClient.onionAddress()`); limits on ports, concurrent
+  visitors and request size/time protect the host. Everything but the identity is held in memory, so a
+  restarted host picks new introduction points. Needs a vendored `tor-hsservice` with in-memory state
+  (`crates/patches/tor-hsservice/PATCH.md`). Demo: `website/host.html`. Live checks:
+  `test/hs-live-node.mjs`, `test/hs-live-lifecycle.mjs`. Hosting is in a separate build of the WASM (see the entries above), so the default entry points are
+  not larger.
+- **A loading screen that explains the Tor connection, for everyone.** While the page connects it says
+  "Connecting securely…" with a route from the visitor to the server that fills as the real steps complete,
+  a plain-language step, a note that the first connection takes longer, and "Powered by Tor ⓘ". "Connection
+  details" shows the technical view: the chain from browser to onion service, what goes through Tor and what
+  loads directly, and the Tor client's log. Failures say where they stopped, with a "Try again" button. A
+  "Private connection" badge stays afterwards (`data-badge="false"` hides it). The frame shell always shows it
+  (replacing its one-line status); a plain page opts in with `data-loading="screen"`.
+- **Transparent loading (`data-loading="transparent"`).** No screen: Tor connects at once while the visitor
+  uses the page (reading a blog), so a later request that needs the server (leaving a comment) finds it ready.
+  A visitor who acts first sees a notice that the request is waiting for the private connection, and it is sent
+  when ready. The Service Worker reports held requests (`tor-site-waiting`).
+- `TorSite` gains `progress`, `onProgress()`, `waiting` and `onWaiting()` (`src/site/progress.ts`,
+  `loading.ts`, `badge.ts`, `ui.ts`).
+
 ### Fixed (code review of 2026-10-04, `CODE_REVIEW.md`)
 
 - **The site adapter no longer forwards private requests to the static host when its manifest cannot be
@@ -43,56 +124,6 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
 
 ### Added
 
-- **Host an onion service from a worker: `startHostWorker()`.** The service, its Tor client and its request
-  handler run in a SharedWorker (`tor-js/host-worker.js`, about 67 kB, loaded only when used), so all tabs of an
-  origin share one service and a reload of one tab leaves it running while another tab is open. A reload of the
-  only tab, or closing every tab, still ends it (measured in Chromium 152: the worker dies with its last
-  page). Pages see its state and proof-of-work counters through `onStatus`. The handler is a module URL, not a
-  closure. Part of the host build (`tor-js/host`); the default build has the function but it throws
-  `HostingUnavailableError`.
-- **Visiting clients pay for priority by default (`TorClientOptions.pow`).** A busy onion service serves the
-  visitors who did the most proof of work first, but a plain `TorClient` never paid unless the application
-  installed a solver. Now a client created in a page or in Node installs one that runs the work on worker
-  threads (Web Workers; `worker_threads` through the new `pow-node-worker.js`, exported as
-  `tor-js/pow-node-worker.js`), started only when a puzzle comes, and removed when the last client using it
-  closes. It never replaces a solver already installed; `pow: false` turns it off; `maxEffort`, `minEffort`,
-  `workers` and `workerUrl` tune it. Checked offline with real worker threads and live against a hosted
-  service (`test/visitor-pow-live.mjs`). Cost: about 3 kB gzip of JavaScript in every entry point.
-- **`TorClient.close()` lets a Node process exit.** Closing a client used to leave arti's background timers
-  running, some for three minutes, so a script that closed its client did not end (every live script finished
-  with `process.exit(0)`). Now `close()` unreferences the runtime's timers (`WasmRuntime::shutdown`; they still
-  fire, so arti can finish tearing itself down, but none holds the event loop open), the pool of spare Snowflake
-  sessions is released when the last client using it closes (`snowflake::Lease`), and a hosted service's
-  proof-of-work tasks end with the service instead of after a five minute sleep. A client with nothing in flight
-  exits within a second of `close()`; work arti already has in flight (a descriptor upload, a bootstrap) runs
-  out first, which its own timeouts bound at about a minute. `test/close-exits-live.mjs` checks all three cases.
-- **Hosting is a separate build: `tor-js/host`.** The onion service code is no longer in the default WASM, so
-  a page that only visits onion services does not pay for it: `tor-js`, `tor-js/wasm-file` and
-  `tor-js/wasm-base64` ship the same WASM as before hosting existed (5,472,447 bytes, 2.12 MB gzip), and
-  `tor-js/host`, `tor-js/host/wasm-file` and `tor-js/host/wasm-base64` ship `tor_js_host_bg.wasm`, built with the
-  new Cargo feature `onion-service-host` (6,370,381 bytes, 2.45 MB gzip; about 330 kB more). Calling `listen()` or
-  `serve()` on the default build throws `HostingUnavailableError`, which names the right import. The CDN loader
-  is shared (`src/cdnLoader.ts`); the host one uses only the npm mirrors (the GitHub artifact mirror is filled by
-  CI for the default binary only). `scripts/build.sh` and CI build and hash both WASM files; on Windows build
-  them with the two `wasm-pack` commands in `.agent/host-pow-and-optional-host-execplan.md`.
-- **Proof of work for hosted services.** A hosted onion service now publishes proof-of-work parameters,
-  verifies the solutions visitors send, serves the highest effort first, raises the effort it asks for when it
-  is busy, and reports what it did in `service.pow`. On by default; `proofOfWork: false` turns it off and
-  `proofOfWork: { queueDepth }` sizes the queue (default 256, not arti's 8192, which can take 32 MB). An idle
-  service asks for no effort, and visitors that cannot solve are still served. In the vendored `tor-hsservice`
-  the two request-handling loops, which arti runs on blocking threads, are async tasks that end when the
-  service does. Checked live: a visitor paying effort 4 or 6 was verified (by a Node host and by a browser
-  tab), a corrupted solution was rejected and not served (`test/hs-live-pow.mjs`).
-- **Host an onion service from a browser tab or a Node process: `client.serve()`, `client.listen()`.** A page
-  can now be an onion service, not only visit one: `client.serve(handler)` answers HTTP requests with a
-  `Response` and returns a `.onion` address any tor-js client or Tor Browser can visit; `client.listen()`
-  gives raw duplex connections for protocols of your own. The address comes from a 32-byte identity the
-  caller keeps (`TorClient.generateIdentity()`, `TorClient.onionAddress()`); limits on ports, concurrent
-  visitors and request size/time protect the host. Everything but the identity is held in memory, so a
-  restarted host picks new introduction points. Needs a vendored `tor-hsservice` with in-memory state
-  (`crates/patches/tor-hsservice/PATCH.md`). Demo: `website/host.html`. Live checks:
-  `test/hs-live-node.mjs`, `test/hs-live-lifecycle.mjs`. Hosting is in a separate build of the WASM (see the entries above), so the default entry points are
-  not larger.
 - **A browse-anything web proxy over Tor for static hosts (`web-proxy/`).** Host a folder of static files
   (GitHub Pages) and a visitor can open any URL or `.onion` address in it; the requests are made by the
   visitor's own browser through Tor, so the host never sees what is browsed. Ultraviolet (unmodified) rewrites
@@ -101,6 +132,81 @@ No API breaks. The WASM grows about 5% gzip (`tor-js/wasm-base64` 2.5 → 2.7 MB
   WebSockets). The Service Worker fails closed (403 for anything not rewritten to go over Tor, the injected
   scripts served from its cache, a `'self'`-only Content-Security-Policy) and the page being read stays in the
   URL fragment. See `web-proxy/README.md`; ExecPlan in `.agent/web-proxy-execplan.md`.
+- **The web proxy is tested on real sites, and works on more of them.** `node web-proxy/test/compat/run.mjs`
+  opens 61 everyday sites (search engines, news, documentation, package registries, shops, forms, redirects,
+  cookies, gzip) twice in headless Chromium, directly and through the proxy, and compares title, text, images,
+  script errors, failed requests and a typed-in search; a Tor stall is retried. It also runs a leak self-test
+  that makes a proxied page try eight ways to reach the network without Tor and fails if any succeeds (shown
+  to catch leaks on a deliberately unsafe build). Over 61 sites no request left the proxy. The rewriter is now
+  a build-time choice, `--engine scramjet` (the default) or `--engine uv`; both are AGPL-3.0, Ultraviolet is
+  shipped unmodified (Scramjet gained a small build-time patch later, see "Fixed (web proxy)"), and Scramjet passes
+  or warns on 49 of the 51 sites that open directly and are not behind a challenge, Ultraviolet on 45 of 52 (full re-run of 2026-10-12). ExecPlan in `.agent/proxy-compat-execplan.md`.
+
+### Fixed (web proxy)
+
+- **Requests with a streamed body were rejected `411 Length Required`.** A page's `POST` body reaches the
+  transport as a stream, which tor-js sends chunked; Bing, Google Analytics and others refuse that. A stream
+  under 8 MiB is now read first, and a bodyless `POST`/`PUT`/`PATCH` is sent as `Content-Length: 0`.
+- **Scramjet could not render `<picture>` images from React-rendered pages.** React writes `srcSet`; Scramjet 1.1.0
+  only rewrites `srcset`, so the browser's policy blocked the unrewritten address. The transport writes the
+  lower-case spelling inside image-like tags, keeping the byte count.
+- **`fetch` over HTTPS reuses its connection.** Connection reuse used to cover plain HTTP only, so every HTTPS
+  request paid for a new Tor stream and a TLS handshake: about 1 s each, which made pages with long chains of
+  dependent requests very slow through the web proxy (Bing's challenge page loads about 160 scripts one after the
+  other and took over three minutes). A GET or HEAD without a body now keeps its TLS session for the next request
+  to the same host (`fetch.rs`: `wants_keep_alive` accepts `https`; the pool is keyed by scheme as well as host and
+  port). Measured in Node, alternating old and new builds on the same machine: median of ten sequential HTTPS
+  requests 644 and 668 ms before, 253 and 415 ms after. Bing's results now appear in a headed browser through the
+  proxy after about a minute and a half.
+- **`TorClient.fetch` takes `isolate: true`, and the proxy's retries use it.** A request that failed at its exit
+  ("timed out at exit") used to be retried on the same circuit, through the same exit, and failed again. With
+  `isolate` the request gets a circuit group of its own (Arti `StreamPrefs::set_isolation`); once it connects, that
+  group is remembered for the host, so the page's other requests to it follow the circuit that worked, and the old
+  group's kept connections are dropped. The proxy's transport retries a GET or HEAD three times, each on a new
+  circuit. Measured: of 16 fresh circuits, 16 reached debian.org, 13 kernel.org and only 1 www.gnu.org, which blocks
+  most Tor exits, so gnu.org still often fails.
+- **DuckDuckGo's JavaScript search page works.** The transport sent `Accept-Encoding: gzip`, which no browser sends
+  alone, and DuckDuckGo answered with a redirect to an error page (418, `is_tor=1`). It now sends `gzip, deflate`
+  (both are decoded), which DuckDuckGo serves like any browser's request.
+- **GitHub's repository page shows its Releases and Contributors.** GitHub builds a `Request` from a root-relative
+  path; the browser resolves it against the proxy's origin and Scramjet refused the result. The Scramjet engine now
+  resolves such a path again against the real address of the page that asked, takes off addresses wrapped inside
+  proxied addresses (also for a reload, by redirecting), and reads `blob:` module addresses from the real blob. The
+  shell takes the layers off the frame's address when it mirrors it into the address bar.
+- `web-proxy/build.mjs` could not build since the proof-of-work change (`node:worker_threads` was not listed as an
+  external) and deleted `dist/` before failing; `web-proxy/serve.mjs` ignored a lone port argument.
+- **ChatGPT's home page works through the web proxy in Chromium and Firefox ("hello" gets an answer).** Four
+  separate faults, found by driving the page in both browsers:
+  - *Firefox sent every POST and PUT with an empty body* ("method not allowed" and 400s): Firefox has no
+    `Request.body`. The Scramjet engine now reads the body with `arrayBuffer()` and hands the bytes to the transport
+    worker directly.
+  - *Firefox sent `keepalive` fetches (analytics beacons) straight to the static host*, skipping the Service Worker:
+    the host saw `/service/<address>` and the `Referer`, and answered 404. The transport puts a short script at the
+    start of every HTML page's `<head>` that drops `keepalive` in Firefox (the fail-closed policy did not see these
+    requests, so this was also a leak of the page you were reading to the host; the leak self-test, which uses
+    Chromium, could not show it).
+  - *Everything a worker asked for hung in Firefox.* Firefox never answers `clients.get(<worker id>)`, and Scramjet
+    waits for that before handling any request. After 0.6 s the engine now stands in for the worker's client, with
+    the address the request names as its referrer. Chromium is untouched.
+  - *ChatGPT's conversation worker died and the page froze.* The worker deletes every global it does not know before
+    it runs; Scramjet's helper globals (`$scramjet$rewrite`, ...) are defined so that they cannot be deleted, so it
+    failed with "Failed to remove sandbox global", the page retried the worker in a loop reading `document.cookie`
+    through Scramjet, and the tab froze (Chromium, which then crashed it) or crashed (Firefox). `build.mjs` now patches Scramjet's file so
+    that, in a worker, those helpers (and `$scramerr`, `$scramdbg`, `$scramitize`) live on `Object.prototype`, and its
+    writes to `Error.prepareStackTrace` and `self.event` do not throw on frozen objects. The build stops if the
+    patched code is not found exactly once, so a new Scramjet version cannot skip the patch unnoticed.
+  `node web-proxy/test/compat/chat.mjs --browser firefox` (or `chromium`) repeats the check: it opens ChatGPT through
+  the proxy, waits for the page's app to start, sends "hello", and fails unless an answer appears and the page
+  keeps responding afterwards. The ExecPlan, `.agent/proxy-compat-execplan.md`, records how each fault was found.
+- **The proxy keeps what it fetched over Tor, like a browser cache would.** Scripts, styles, fonts, images and
+  workers that the server marked `immutable` or gave a `max-age` of a minute or more (kept for at most a week) are
+  answered from the Service Worker's Cache Storage instead of being fetched over Tor again (`web-proxy/src/cachepolicy.js`,
+  unit-tested). ChatGPT's home page asks for about 400 scripts and reloads itself once; the second load now answers
+  about half from the cache. Nothing with a cookie, `Vary: Cookie`, `no-store`, `no-cache` or `private`, and never a
+  page or a script's own `fetch()`. The cache is per build and holds at most 3000 files.
+- **The Scramjet engine builds the rewriter's WebAssembly script once.** Scramjet builds the 0.7 MB base64 script again
+  for every frame and worker that loads it (20 to 40 ms of the Service Worker's time each, measured); the engine now
+  keeps the first.
 - **Static-site adapter (`tor-js/site`).** A Service Worker plus a
   `tor-site.json` manifest route an existing site's backend paths over Tor to an
   onion service while everything else stays on the static host, with no change

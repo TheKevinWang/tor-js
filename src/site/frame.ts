@@ -16,6 +16,7 @@
  */
 
 import type { TorSite } from './register.js';
+import { showLoadingScreen } from './loading.js';
 
 /** Files of the static host that are the shell itself, never site content. */
 const SHELL_FILES = ['index.html', '404.html', 'tor-shell.html'];
@@ -60,18 +61,12 @@ export function leavesFrame(href: string, target: string | null, frameOrigin: st
 }
 
 /**
- * Run the shell: once the Service Worker controls the page, create the iframe,
- * show connection progress until it first loads, and keep the URL and title in
+ * Run the shell: show the loading screen (loading.ts), and once the Service Worker
+ * controls the page create the iframe, removing the screen when it first loads, and keep the URL and title in
  * step with it.
  */
 export function startFrameShell(sitePromise: Promise<TorSite>): void {
-  const overlay = document.createElement('div');
-  overlay.style.cssText =
-    'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;' +
-    'font:16px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText;z-index:2;text-align:center;padding:0 16px';
-  overlay.innerHTML = '<h1 style="font-size:1.3rem">Connecting over Tor…</h1><p id="tor-shell-status" style="opacity:.7">Starting…</p>';
-  document.body.append(overlay);
-  const statusEl = overlay.querySelector('#tor-shell-status')!;
+  const loading = showLoadingScreen(sitePromise);
 
   sitePromise.then(
     async (site) => {
@@ -79,12 +74,6 @@ export function startFrameShell(sitePromise: Promise<TorSite>): void {
       // left by a previous shell (a reload), so wait until the Service Worker has it.
       await site.hostAttached;
       const scopePath = new URL(site.registration.scope).pathname;
-      const show = (s: { state: string; message?: string }) => {
-        statusEl.textContent = s.state === 'error' ? `Tor failed: ${s.message ?? 'unknown error'}` : `Tor: ${s.state}`;
-      };
-      show(site.status);
-      site.onStatus(show);
-
       const frame = document.createElement('iframe');
       frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;z-index:1;background:Canvas';
       frame.setAttribute('title', document.title || 'site');
@@ -108,16 +97,14 @@ export function startFrameShell(sitePromise: Promise<TorSite>): void {
         if (title && title !== document.title) document.title = title;
       };
       frame.addEventListener('load', () => {
-        overlay.remove(); // the first load that gets here is the site (or its error page)
+        loading.dismiss(); // the first load that gets here is the site (or its error page)
         sync();
       });
       setInterval(sync, 500); // in-page changes (history.pushState, title edits) raise no event we can hear
       frame.src = initialFrameUrl(location, scopePath);
       document.body.append(frame);
     },
-    (e) => {
-      statusEl.textContent = `Tor failed: ${e instanceof Error ? e.message : String(e)}`;
-    },
+    () => {}, // the loading screen shows why registration failed
   );
 }
 

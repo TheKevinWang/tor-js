@@ -310,6 +310,38 @@ your-site/
 <script src="tor-site.js" data-sw="tor-site-sw.js" data-manifest="tor-site.json"></script>
 ```
 
+Connecting takes seconds to a minute or more, and the script tag's `data-loading`
+decides what visitors see meanwhile:
+
+- **Not set (default):** nothing. Tor connects in the background from the moment the
+  page loads.
+- **`data-loading="transparent"`:** connect at once, with no loading screen, for a page that
+  can keep the visitor busy first. A blog with comments is the example: the post
+  loads from the static host and is read while Tor connects, so by the time the reader
+  posts a comment the private connection is already up and the request goes straight
+  through (about a second, against a minute or more cold in testing). A visitor who is
+  quicker than Tor is not left with a hung form: a small notice says that the request is
+  waiting for the private connection and will go through as soon as it is ready, and the
+  request is then sent. Code can wait for it too (`await (await window.torSite).ready()`),
+  for instance to enable a "Post" button. It overrides `data-prewarm="false"`.
+- **`data-loading="screen"` (or `"true"`):** a loading screen that covers the page until Tor
+  is connected, for a page that is useless without the server. Visitors see "Connecting
+  securely…", a route drawn from them to the server that fills as the real steps
+  complete, a plain-language step ("Starting the private network", "Finding a route",
+  "Connecting to the server"), a note that the first connection takes longer, and a
+  "Powered by Tor ⓘ" line explaining why. "Connection details" shows the same thing in
+  Tor's terms for technical visitors (browser, Snowflake transport, Tor network, circuit,
+  onion service, what goes through Tor and what loads directly, and the Tor client's log).
+  Failures say where it stopped ("the private network is connected, but the server isn't
+  responding") and offer "Try again".
+
+With either of the last two, a small "Private connection" badge stays in the corner
+(`data-badge="false"` hides it); it says only that requests to the server go through Tor,
+not that the visitor is anonymous. A frame-shell site (below) always shows the loading
+screen, until the site's first page has loaded, because its own first page comes over Tor.
+Code can follow the progress with `site.progress` and `site.onProgress(cb)`, and see requests
+held for Tor with `site.waiting` and `site.onWaiting(cb)`.
+
 ```json
 {
   "version": 1,

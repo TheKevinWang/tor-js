@@ -367,6 +367,9 @@ pub struct TorClient {
     /// process: another client may have different settings, and must never be
     /// handed a stream that this one opened.
     idle: IdleConnections,
+    /// The circuit group each host is being fetched on, for hosts where a request asked for `isolate` (see
+    /// `fetch_impl`). Per client, like `idle`.
+    circuits: HostCircuits,
 }
 
 #[wasm_bindgen]
@@ -402,8 +405,9 @@ impl TorClient {
 
         let tls_config = Arc::clone(&self.tls_config);
         let idle = Rc::clone(&self.idle);
+        let circuits = Rc::clone(&self.circuits);
         wasm_bindgen_futures::future_to_promise(async move {
-            fetch_impl(&client, &url, init, tls_config, idle).await
+            fetch_impl(&client, &url, init, tls_config, idle, circuits).await
         })
     }
 
@@ -450,6 +454,7 @@ impl TorClient {
             client.runtime().shutdown();
         }
         self.idle.borrow_mut().clear();
+        self.circuits.borrow_mut().clear();
         // Let go of this client's Snowflake sessions, including spares parked for it.
         self.snowflake_lease = None;
         wasm_bindgen_futures::future_to_promise(async {
@@ -621,6 +626,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue> 
         snowflake_lease,
         tls_config: make_tls_config(),
         idle: Rc::new(RefCell::new(conn_pool::IdlePool::new(POOL_MAX_PER_HOST, POOL_MAX_TOTAL))),
+        circuits: Rc::new(RefCell::new(HashMap::new())),
     })
 }
 
@@ -688,6 +694,8 @@ fn make_tls_config() -> Arc<futures_rustls::rustls::ClientConfig> {
 struct FetchInit {
     method: Option<String>,
     headers: Option<HashMap<String, String>>,
+    /// Carry this request on a circuit of its own (see `TorClient.fetch`'s `isolate`).
+    isolate: Option<bool>,
     // `body` is a JS object (bytes or a ReadableStream), not serde-decodable —
     // extracted separately via extract_body_from_js.
 }
@@ -705,6 +713,9 @@ const POOL_IDLE_MS: f64 = 15_000.0;
 const POOL_IDLE_MARGIN_MS: f64 = 1_000.0;
 const POOL_MAX_PER_HOST: usize = 6;
 const POOL_MAX_TOTAL: usize = 16;
+
+/// The isolation group a host's requests use once one of them asked for `isolate`, keyed by `host:port`.
+type HostCircuits = Rc<RefCell<HashMap<String, arti_client::IsolationToken>>>;
 
 /// One client's idle connections (see `TorClient::idle`).
 type IdleConnections = Rc<RefCell<conn_pool::IdlePool<fetch::BoxedConn>>>;
@@ -757,6 +768,7 @@ async fn fetch_impl(
     init: JsValue,
     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
     idle: IdleConnections,
+    circuits: HostCircuits,
 ) -> Result<JsValue, JsValue> {
     // Parse URL
     let url = url::Url::parse(url_str)
@@ -821,30 +833,54 @@ async fn fetch_impl(
     // A request that may keep its connection first looks for one already open.
     // Reusing skips the round trip to the far end that opening a stream costs.
     let keep_alive = fetch::wants_keep_alive(&url, &method, &headers, &request_body);
+    // A kept HTTPS connection is a TLS session; it must never be handed to a plain HTTP request (or the reverse)
+    // for the same host and port, so the pool is keyed by scheme as well.
+    let pool_host = if is_https { format!("https:{host}") } else { host.to_owned() };
+
+    // `isolate` (a retry after a failure at the exit) asks for a circuit group this host has not used: Arti then
+    // builds or picks a circuit that none of the host's earlier requests used, so the retry can reach the site
+    // through a different exit. Once such a connection succeeds the group is remembered, so the rest of the page's
+    // requests to the host follow the circuit that worked rather than the shared one that did not, and the
+    // connections kept from the old group are dropped. A group whose connection failed is not remembered.
+    let circuit_key = format!("{host}:{port}");
+    let fresh_group = fetch_init.isolate.unwrap_or(false).then(arti_client::IsolationToken::new);
 
     let connect = || async {
         debug!("Connecting to {}:{}...", host, port);
+        let mut prefs = arti_client::StreamPrefs::new();
+        let remembered = circuits.borrow().get(&circuit_key).copied();
+        if let Some(group) = fresh_group.or(remembered) {
+            prefs.set_isolation(group);
+        }
         let stream = client
-            .connect((host, port))
+            .connect_with_prefs((host, port), &prefs)
             .await
             .map_err(|e| JsTorError::connection(format!("Failed to connect: {}", e)).into_js_value())?;
+        if let Some(group) = fresh_group {
+            circuits.borrow_mut().insert(circuit_key.clone(), group);
+            let mut pool = idle.borrow_mut();
+            pool.remove(host, port);
+            pool.remove(&format!("https:{host}"), port);
+        }
         Ok::<fetch::BoxedConn, JsValue>(Box::new(stream))
     };
-    let release = || keep_alive.then(|| release_to_pool(Rc::clone(&idle), host.to_owned(), port));
+    let release = || keep_alive.then(|| release_to_pool(Rc::clone(&idle), pool_host.clone(), port));
 
     // Perform the HTTP request — resolves as soon as headers arrive. Raced as a
     // whole against the abort signal: connecting, TLS, the upload and waiting for
     // the response head are all cut short, and an abort can never be followed by
     // the retry on a fresh connection below.
     let exchange = async {
-        let pooled = if keep_alive { take_idle_connection(&idle, host, port).await } else { None };
+        // (An isolated request wants a circuit of its own, so it never takes a kept connection.)
+        let pooled = if keep_alive && fresh_group.is_none() { take_idle_connection(&idle, &pool_host, port).await } else { None };
         match pooled {
             Some(conn) => {
                 info!("Reusing an open connection to {}:{}", host, port);
                 // The request is a GET or HEAD without a body, so sending it again is
                 // safe: if the reused connection fails (the server closed it just as
                 // it was picked), the request goes out once more on a new one.
-                match fetch::fetch_headers(conn, &url, method.clone(), headers.clone(), fetch::RequestBody::None, is_https, host, Some(tls_config.clone()), release()).await {
+                // (A pooled HTTPS connection already carries its TLS session: `is_https` is false here.)
+                match fetch::fetch_headers(conn, &url, method.clone(), headers.clone(), fetch::RequestBody::None, false, host, Some(tls_config.clone()), release()).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         info!("A reused connection failed ({}); retrying on a new one", e.message);

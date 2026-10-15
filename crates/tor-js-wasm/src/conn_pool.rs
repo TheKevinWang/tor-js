@@ -57,6 +57,11 @@ impl<T> IdlePool<T> {
         }
     }
 
+    /// Drop the idle connections to one host and port, which closes them.
+    pub fn remove(&mut self, host: &str, port: u16) {
+        self.idle.remove(&(host.to_owned(), port));
+    }
+
     /// Drop every idle connection, which closes them.
     pub fn clear(&mut self) {
         self.idle.clear();
@@ -170,5 +175,20 @@ mod tests {
         assert_eq!(pool.len(), 3);
         assert_eq!(pool.take("a", 80, 1.0), None, "the one nearest its end was dropped");
         assert_eq!(pool.take("d", 80, 1.0), Some(4));
+    }
+
+    #[test]
+    fn removing_a_host_drops_only_its_connections() {
+        let mut pool = IdlePool::new(4, 16);
+        pool.put("a", 80, 1, 0.0, 1000.0);
+        pool.put("a", 80, 2, 0.0, 1000.0);
+        pool.put("a", 443, 3, 0.0, 1000.0);
+        pool.put("b", 80, 4, 0.0, 1000.0);
+        pool.remove("a", 80);
+        assert_eq!(pool.len(), 2);
+        assert_eq!(pool.take("a", 80, 1.0), None);
+        assert_eq!(pool.take("a", 443, 1.0), Some(3));
+        assert_eq!(pool.take("b", 80, 1.0), Some(4));
+        pool.remove("nobody", 1); // not an error
     }
 }
