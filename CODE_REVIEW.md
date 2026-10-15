@@ -2,7 +2,7 @@
 
 Review date: 2026-10-04.
 
-This review covers the current Tor client, static-site adapter, proof-of-work integration, and uncommitted web proxy. It records five prioritized findings and suggested fixes. No implementation fixes were made during the review.
+This review covers the current Tor client, static-site adapter and proof-of-work integration. It records four prioritized findings and suggested fixes. No implementation fixes were made during the review.
 
 Paths are relative to this directory. Line numbers refer to the reviewed working tree and may move. High priority means the issue should be addressed before relying on the affected feature's security or correctness guarantees. Medium priority means a significant reliability issue to address next.
 
@@ -13,7 +13,6 @@ Paths are relative to this directory. Line numbers refer to the reviewed working
 | R1 | High | Manifest-load failure can forward Tor-bound requests to the static host | `src/site/sw.ts:268` |
 | R2 | High | Origin translation and cookie attachment weaken cross-site request protection | `src/site/torHttp.ts:161` |
 | R3 | High | The WASM client cannot construct valid 204, 205, or 304 responses | `crates/tor-js-wasm/src/lib.rs:884` |
-| R4 | High | The web proxy's fail-closed claim exceeds its browser-enforced isolation | `web-proxy/src/index.html:50`, `web-proxy/src/guard.js:35` |
 | R5 | Medium | Abort signals do not reliably interrupt pending requests | `src/TorClient.ts:151`, `crates/tor-js-wasm/src/lib.rs:798` |
 
 ## R1: Manifest-load failure can forward private requests to the static host
@@ -71,8 +70,6 @@ The constructor rejects a non-null body for status 204, 205, or 304, including a
 
 The constructor behavior was confirmed locally for all three statuses and is required by the [Fetch standard's response initialization algorithm](https://fetch.spec.whatwg.org/#initialize-a-response). The full WASM/Tor path was not exercised for this finding.
 
-The test substitute in [test/unit/proxyTransport.test.mjs](test/unit/proxyTransport.test.mjs), lines 23–24, already passes a null body for these statuses. Its passing tests therefore do not validate the production conversion that contains the bug.
-
 ### Suggested fix
 
 - Select a null body in the Rust-to-JavaScript conversion for final responses whose status forbids a body.
@@ -82,33 +79,9 @@ The test substitute in [test/unit/proxyTransport.test.mjs](test/unit/proxyTransp
 
 ### Validation
 
-Exercise the actual WASM-to-JavaScript response conversion for 204, 205, 304, HEAD, and an ordinary 200 response. Check status, headers, null-body behavior, and resource cleanup. Retain the transport tests, but add coverage below their replacement-fetch boundary.
+Exercise the actual WASM-to-JavaScript response conversion for 204, 205, 304, HEAD, and an ordinary 200 response. Check status, headers, null-body behavior, and resource cleanup.
 
-## R4: The web proxy's privacy guarantee exceeds its isolation
-
-### Evidence and impact
-
-[web-proxy/src/index.html](web-proxy/src/index.html), line 50, embeds proxied content in an unsandboxed iframe sharing the shell's browser origin. All proxied sites therefore share the same underlying browser security boundary.
-
-[web-proxy/src/guard.js](web-proxy/src/guard.js), lines 35–41, describes its CSP as covering requests missed by rewriting, including navigation. However, `default-src` is a fallback for resource-fetch directives, not a general restriction on top-level navigation. A navigation outside the Service Worker's scope is not guaranteed to pass through that worker's blocking handler. See the [CSP specification](https://www.w3.org/TR/CSP/#directive-default-src) and [Service Worker fetch-handling specification](https://www.w3.org/TR/service-workers/#on-fetch-request).
-
-The existing checks establish useful behavior for the requests they cover. They do not establish confinement of arbitrary untrusted pages or justify an unconditional statement that everything a page does stays inside Tor. The documentation's warning about shared cookies and storage does not fully describe the navigation and shell-isolation implications.
-
-This is an architectural finding based on source and browser specifications. No hostile-page browser reproduction was performed.
-
-### Suggested fix
-
-- Define the supported trust model explicitly: trusted application content and arbitrary third-party content require different isolation guarantees.
-- For arbitrary content, design a browser-enforced separation between the renderer and the privileged shell, with a narrowly defined messaging interface and explicit navigation permissions.
-- Assess sandboxing and origin separation against Service Worker, storage, and rewriter requirements before selecting a design. Adding `sandbox` while retaining both scripts and same-origin access is not a complete isolation solution.
-- Restrict top-level navigation and popup capabilities as part of that design.
-- Until confinement is established, narrow the product and README claims to the behavior actually supported and tested. State that the static host is trusted to deliver the application code faithfully.
-
-### Validation
-
-Use local browser fixtures to verify the intended capability boundary, navigation policy, popup policy, and separation of renderer and shell state. Check observable network activity as well as UI behavior. Repeat the relevant checks across supported browsers and after worker lifecycle changes. These checks should validate a defined isolation design, rather than substitute for one.
-
-## R5: Cancellation does not reliably interrupt pending operations
+# R5: Cancellation does not reliably interrupt pending operations
 
 ### Evidence and impact
 
@@ -138,7 +111,6 @@ The review produced these results on Windows:
 | --- | --- |
 | `npx tsc --noEmit` | Passed |
 | `npx tsc --noEmit -p tsconfig.site.json` | Passed |
-| `npm run test:web-proxy` | 13 passed |
 | `npm run test:unit` | 396 passed, 5 failed, 15 cancelled |
 | `npm run test:rust` | Blocked at gateway linking: missing `sqlite3.lib`; no Rust test result |
 
@@ -150,20 +122,19 @@ The highest-value testing improvement is a small integration suite exercising th
 
 ## Suggested implementation order
 
-Address R1 and R2 first because they affect privacy and authenticated requests. R3 is a focused correctness fix that should also be done early. Resolve R4's trust model and architecture before presenting the proxy as suitable for arbitrary untrusted sites. Then complete R5 and the corresponding integration coverage.
+Address R1 and R2 first because they affect privacy and authenticated requests. R3 is a focused correctness fix that should also be done early. Then complete R5 and the corresponding integration coverage.
 
 ## Status of the findings (2026-10-05)
 
-All five findings were confirmed against the source and addressed.
+All four findings were confirmed against the source and addressed.
 
 | ID | Status | What changed | How it was checked |
 | --- | --- | --- | --- |
 | R1 | Fixed | `src/site/manifestStore.ts` keeps the last valid manifest in Cache Storage; `sw.ts` routes by it when a fresh one fails, answers `503` locally when there is none, fails installation without a valid manifest (`register.ts` then rejects), and registers a Static Routing API rule for its scope. | `test/unit/siteManifestStore.test.mjs`; in Chromium 152 with a logging static server: worker restarted with the manifest returning 503 served a Tor route over Tor using the saved copy, and with no saved copy answered 503; neither request reached the static host. |
 | R2 | Fixed | `src/site/requestPolicy.ts` classifies the initiator (`clients.get(clientId)`, then `Origin`, then `referrer`); unsafe methods not started by the site are refused with 403 in `sw.ts` and again in `torHttp.ts`; foreign `Origin`/`Referer` are dropped; `credentials: "omit"` and `SameSite=Strict` are honoured. | `test/unit/siteRequestPolicy.test.mjs` and new cases in `site.test.mjs` (they fail against the old `torHttp.ts`); in Chromium: a cross-site form post got 403 and nothing was sent, a same-site POST reached DuckDuckGo's onion service over Tor (200). |
 | R3 | Fixed | `fetch_impl` builds HEAD, 101, 204, 205 and 304 responses with a null body and drains the reader in the background so keep-alive connections return to the pool. | Rust unit tests for `response_has_body`; live over Tor from Node: 204, 205, 304 and HEAD return `body === null`, a 200 keeps its body, a plain-HTTP GET after a HEAD works. |
-| R4 | Mitigated, design open | Claims narrowed in `web-proxy/README.md` (new "Trust model") and the page; shell gets `frame-src 'self'`; `guard.js` comment corrected. True confinement needs proxied pages on a second origin: an owner decision. | In Chromium: with `frame-src 'self'` a frame's own cross-origin navigation was blocked; `top.location` still escapes, as now documented. |
 | R5 | Fixed | `src/abort.ts`; `TorClient.fetch` and `LocalBackend.handle` race their shared start-up wait against the signal; `crates/tor-js-wasm/src/abort.rs` races connect/TLS/upload/head and each body read; abort errors keep `name: "AbortError"`, `code: "ABORT"`. | `torClient.test.mjs` (abort during readiness, two callers); live over Tor: abort while waiting for headers rejected after 1.5 s (server answers at 10 s), abort during a pending body read after 0.3 s, client usable afterwards. |
 
-Test environment results after the fixes, on Windows: `npm run test:unit` 445 passed (the five failures and fifteen cancellations above are gone); `npm run test:web-proxy` 13 passed; `cargo test --locked -p tor-js` 152 passed when linked against a locally built `sqlite3.lib` (`SQLITE3_LIB_DIR`, `SQLITE3_STATIC=1`). The two unit-suite failures were partly misdiagnosed above: besides `HOME` versus `USERPROFILE` and the file-URL import, Node 24 has `navigator.locks`, so `src/storage/locking.ts` took its browser path and lost the cross-process lock file; that is fixed in the source, not only in the tests. `scripts/build.sh` still cannot run on Windows (its `RUSTC_WRAPPER` is a shell script).
+Test environment results after the fixes, on Windows: `npm run test:unit` 445 passed (the five failures and fifteen cancellations above are gone); `cargo test --locked -p tor-js` 152 passed when linked against a locally built `sqlite3.lib` (`SQLITE3_LIB_DIR`, `SQLITE3_STATIC=1`). The two unit-suite failures were partly misdiagnosed above: besides `HOME` versus `USERPROFILE` and the file-URL import, Node 24 has `navigator.locks`, so `src/storage/locking.ts` took its browser path and lost the cross-process lock file; that is fixed in the source, not only in the tests. `scripts/build.sh` still cannot run on Windows (its `RUSTC_WRAPPER` is a shell script).
 
 Found during validation and also fixed: Chromium sends a navigation to the network in parallel while it starts a stopped Service Worker, which leaked Tor-route URLs to the static host on cold starts (the Static Routing API rule under R1 stops it); and `FilesystemStorage.getAll` opened every cached file at once, failing with `EMFILE` on Windows once the directory cache was full. Seen but not investigated: a second Node run reusing the saved state of a first run that ended with `process.exit()` failed with "corrupted data in persistent state: Error setting up the guard manager".

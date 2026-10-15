@@ -16,27 +16,27 @@ node scripts/audit-onion-origin.mjs --origin http://127.0.0.1:8000 --torrc /etc/
 ```
 
 checks the points marked "audited" below on the machine that runs the service. For a torrc, use
-`torrcLines()` from `scripts/onion-hardening.mjs` (the FlaskBB demo does). The audit cannot see your
+`torrcLines()` from `scripts/onion-hardening.mjs`. The audit cannot see your
 firewall or router; test that from another network (below).
 
 ## What helps, and what it costs a visitor
 
-| Measure | Cost to a normal visit | Audited | In the FlaskBB demo |
-|---|---|---|---|
-| Server listens on loopback only (`127.0.0.1`), firewall drops unsolicited inbound traffic | none: Tor and the server are on one machine | yes (and the firewall, from outside) | yes |
-| Tor process that listens for nothing and cannot relay, run programs or be debugged (`SocksPort 0`, `ClientOnly`, `NoExec`, `DisableDebuggerAttachment`) | none | yes | yes |
-| Introduction-point rate limiting (`HiddenServiceEnableIntroDoSDefense`) and more introduction points (5, Tor's default is 3) | none unless under flood; then excess introductions are dropped at the introduction points | yes | yes |
-| No `Server` header, a cap on request body size (10 MiB), a connection limit that fits keep-alive | none | yes (header) | yes |
-| Static files from the static host, not the onion service | faster | n/a | yes (the adapter's `static` list) |
-| Cache headers on dynamic pages that can be cached | faster | n/a | no |
-| Several instances behind OnionBalance | none in the data path (see below) | n/a | no |
-| Proof of work (`HiddenServicePoWDefensesEnabled`, queue rate 25, burst 100) | none when not under attack; seconds to minutes of CPU when it asks for effort | yes (limits checked) | yes (`--no-pow` turns it off) |
-| A second, private onion service behind a public one | one more Tor leg on every request | n/a | no, not recommended |
+| Measure | Cost to a normal visit | Audited |
+|---|---|---|
+| Server listens on loopback only (`127.0.0.1`), firewall drops unsolicited inbound traffic | none: Tor and the server are on one machine | yes (and the firewall, from outside) |
+| Tor process that listens for nothing and cannot relay, run programs or be debugged (`SocksPort 0`, `ClientOnly`, `NoExec`, `DisableDebuggerAttachment`) | none | yes |
+| Introduction-point rate limiting (`HiddenServiceEnableIntroDoSDefense`) and more introduction points (5, Tor's default is 3) | none unless under flood; then excess introductions are dropped at the introduction points | yes |
+| No `Server` header, a cap on request body size (10 MiB), a connection limit that fits keep-alive | none | yes (header) |
+| Static files from the static host, not the onion service | faster | n/a |
+| Cache headers on dynamic pages that can be cached | faster | n/a |
+| Several instances behind OnionBalance | none in the data path (see below) | n/a |
+| Proof of work (`HiddenServicePoWDefensesEnabled`, queue rate 25, burst 100) | none when not under attack; seconds to minutes of CPU when it asks for effort | yes (limits checked) |
+| A second, private onion service behind a public one | one more Tor leg on every request | n/a |
 
 ### Proof of work
 
 When a service is overloaded, proof of work makes it serve first the visitors who solved a puzzle,
-which makes a flood cost the attacker CPU. It is on in the demo, with conservative limits:
+which makes a flood cost the attacker CPU. It is on in the generated torrc, with conservative limits:
 
     HiddenServicePoWDefensesEnabled 1
     HiddenServicePoWQueueRate 25
@@ -75,15 +75,15 @@ less, and what effort a real attack makes a service ask for, are by design, not 
 The workers are run by a page of the site, whichever way the Tor client is hosted (a worker host or the
 Service Worker; checked in a browser for both). A visitor with no page open to do it, which in practice
 means no visitor, would connect without offering a solution: fine while the service is idle, and at the
-back of the queue under attack, as if the service had no proof of work. Turn it off in the demo with `--no-pow`, or in
+back of the queue under attack, as if the service had no proof of work. Turn it off in
 `torrcLines` with `pow: false`.
 
 ### Keep-alive and the server's connection limit
 
 The client keeps a connection for the next request to the same host, for up to 15 s (6 per host at
 most). A visitor therefore holds a few idle connections to your server while browsing. A server
-that limits connections (Waitress: 100 by default) can be filled by a few dozen visitors; the demo
-raises it to 1000. A server whose workers block on an idle connection (Gunicorn's synchronous
+that limits connections (Waitress: 100 by default) can be filled by a few dozen visitors; raise it
+if that matters to you. A server whose workers block on an idle connection (Gunicorn's synchronous
 workers) answers `Connection: close`, which the client respects, so nothing is held.
 
 ### OnionBalance

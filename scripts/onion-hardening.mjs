@@ -7,8 +7,8 @@
 //   analyzeTorrc(text)        findings about an existing torrc
 //   analyzeResponse(r, opts)  findings about what the origin server says about itself
 //
-// scripts/audit-onion-origin.mjs runs them against a live origin; the FlaskBB demo
-// (examples/flaskbb-demo/run.mjs) uses torrcLines. What each setting does, and why proof
+// scripts/audit-onion-origin.mjs runs them against a live origin;
+// torrcLines generates a torrc. What each setting does, and why proof
 // of work is off by default, is in SERVER-HARDENING.md.
 
 import { isIP } from 'node:net'

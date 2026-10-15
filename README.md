@@ -222,7 +222,7 @@ The handler is a module the worker imports (it cannot be a function of your page
 
 **What it does not do.** A SharedWorker lasts only while some tab of the origin is open: close every tab and the service is gone, and so is a reload of the *only* tab (measured in Chromium 152: the worker is destroyed with its last page, and the service starts again in about ten seconds under the same address; visitors that hold its old details can take minutes to reach it, see the limits above). It survives reloads and navigations when another tab of the site is open. Where `SharedWorker` does not exist, `startHostWorker` uses a dedicated worker, which belongs to its page (`service.shared` is `false`). Whether a browser slows a hidden tab's service is not settled here: in the desktop app's Chromium a hidden page's service answered every probe for twelve minutes, but that browser does not throttle background timers (`test/hs-probe.mjs` measures it in one that does).
 
-## Gateway
+# Gateway
 
 Browsers can't open raw TCP sockets, so to reach Tor relays from a browser you connect through a **gateway** — a small server that proxies relay connections and serves a fast-bootstrap snapshot of the Tor directory. (In Node.js/Deno tor-js opens TCP directly, so a gateway is optional there — used only for fast bootstrap.)
 
@@ -467,9 +467,9 @@ it the **frame shell**: `"client": { "shell": "frame" }`.
 - Clicks, form posts and redirects navigate only the iframe, with native
   behaviour (scripts, forms, history, scroll restoration). The shell keeps the
   address bar and title in step, so it looks like an ordinary site; the back
-  button steps the iframe. Verified in a browser with a real forum: 10+ navigations
-  and a session of register, post, reply and logout without a second Tor client or
-  data channel.
+  button steps the iframe. Verified in a browser with a real
+  server-rendered site: 10+ navigations and a login session without a second Tor
+  client or data channel.
 - The Service Worker answers a top-level navigation to a Tor route with the shell
   page, and serves iframe navigations from Tor. It removes `X-Frame-Options` and
   any `frame-ancestors` from the backend's headers and adds `frame-ancestors
@@ -486,18 +486,7 @@ it the **frame shell**: `"client": { "shell": "frame" }`.
   over; with none, requests fail (they never fall back to another carrier).
 - `"shell": "frame"` cannot be combined with `"host": "service-worker"`.
 
-### A worked example: a forum
-
-`examples/flaskbb-demo/` runs FlaskBB as an onion service behind a static host that
-imitates GitHub Pages (GET and HEAD only, `404.html`, no server code), root-hosted or
-as a project page, with a headless end-to-end check
-(`test/site-live-forum.mjs`: register, log in, post, reply, log out, over Tor). See
-its README. Things it taught that are now handled or documented: the manifest must
-list the adapter's own files as `static` when everything else goes to Tor; a first
-visit to any deep link needs a `404.html` shell; multi-page sites need `"host":
-"service-worker"`.
-
-### Onion services that ask for proof of work
+## Onion services that ask for proof of work
 
 An onion service under attack can ask every visitor for a solution to a puzzle (proof of work)
 before it takes their connection request, and serve the ones who did the most work first. The

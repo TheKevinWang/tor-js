@@ -3,8 +3,8 @@
 //
 //   node test/site-live-pow.mjs http://<onion>.onion [--effort 16] [--workers 3] [--big 200]
 //
-// The service: a Tor with HiddenServicePoWDefensesEnabled 1, such as the one the FlaskBB demo starts
-// (node examples/flaskbb-demo/run.mjs, proof of work is on unless --no-pow). A service that is not
+// The service: a Tor with HiddenServicePoWDefensesEnabled 1, such as one run with
+// `torrcLines({ pow: true })` from scripts/onion-hardening.mjs. A service that is not
 // under attack asks for no effort, so the test sets the least effort the client pays
 // (`__torJsPowConfig.minEffort`, see crates/patches/tor-hsclient/PATCH.md), which makes the client
 // solve and send a puzzle solution with its introduction request whenever the service uses proof of
